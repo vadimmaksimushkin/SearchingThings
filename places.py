@@ -1,49 +1,57 @@
 from api_key import GOOGLE_MAPS_API_KEY
-from typing import Any
+from typing import Any, Iterable
 import requests
 import json
 from pathlib import Path
-from typing import Any, Iterable
 
 
 class ShoppingMall:
-    name_to_field: dict[str, str] = {
+    """
+    Class for handling the shopping mall info
+    """
+    name_to_field: dict[str, str | tuple[str, str]] = {
         "name": "places.displayName",
         "address": "places.formattedAddress",
         "phone": "places.internationalPhoneNumber",
-        "opening_hours": "places.regularOpeningHours", # FIXME: add places.regularSecondaryOpeningHours to requesting fields as well
-        "rating": "places.rating", #FIXME: add places.userRatingCount to requesting fields as well
+        "opening_hours": (
+            "places.regularOpeningHours",
+            "places.regularSecondaryOpeningHours",
+        ),
+        "rating": ("places.rating",
+                   "places.userRatingCount"
+        ),
         "reviews": "places.reviews",
         "website": "places.websiteUri",
         "coordinates": "places.location",
         "photos": "places.photos",
         "category": "places.types",
         "plus_code": "places.plusCode",
-        }
+    }
 
     def __init__(
         self,
         name: str | None = None,
         address: str | None = None,
         phone: str | None = None,
-        opening_hours: str | None = None, #FIXME: add secondary hours
-        rating: str | float | None = None, # FIXME: change to float # FIXME: add ratingCount
-        reviews: str | list[Any] | None = None, #FIXME: change to list
+        opening_hours: dict[str, Any] | None = None,
+        secondary_opening_hours: list[dict[str, Any]] | None = None,
+        rating: float | None = None,
+        rating_count: int | None = None,
+        reviews: list[dict[str, Any]] | None = None,
         website: str | None = None,
-        coordinates: str | None = None,
-        photos: str | list[Any] | None = None, #FIXME: change to list
-        category: str | list[Any] | None = None, #FIXME: change to list
+        coordinates: dict[str, float] | None = None,
+        photos: list[dict[str, Any]] | None = None,
+        category: list[str] | None = None,
         plus_code: str | None = None,
         email: str | None = None,
         ) -> None:
-        """
-        Class for handling the shopping mall info
-        """
         self.name = name
         self.address = address
         self.phone = phone
         self.opening_hours = opening_hours
+        self.secondary_opening_hours = secondary_opening_hours
         self.rating = rating
+        self.rating_count = rating_count
         self.reviews = reviews
         self.website = website
         self.coordinates = coordinates
@@ -57,24 +65,30 @@ class ShoppingMall:
 
     @classmethod
     def request_fields(cls, *fields: str) -> str:
-        result = ["places.id"]
+        result: list[str] = ["places.id"]
         for field in fields:
             api_field = cls.name_to_field.get(field)
-            if api_field:
+            if api_field is None:
+                continue
+            if isinstance(api_field, str):
                 result.append(api_field)
+            else:
+                result.extend(api_field)
         return ",".join(result)
 
     @classmethod
     def from_api_response(cls, data: dict[str, Any]) -> "ShoppingMall":
-        display_name = data.get("displayName") or {}
-        plus_code = data.get("plusCode") or {}
+        display_name = data.get("displayName", {})
+        plus_code = data.get("plusCode", {})
 
         return cls(
             name=display_name.get("text"),
             address=data.get("formattedAddress"),
             phone=data.get("internationalPhoneNumber"),
             opening_hours=data.get("regularOpeningHours"),
+            secondary_opening_hours=data.get("regularSecondaryOpeningHours"),
             rating=data.get("rating"),
+            rating_count=data.get("userRatingCount"),
             reviews=data.get("reviews"),
             website=data.get("websiteUri"),
             coordinates=data.get("location"),
@@ -86,14 +100,13 @@ class ShoppingMall:
 
 class ShoppingMallList(list[ShoppingMall]):
     """A list of ShoppingMall objects"""
-
     def __init__(self, items: Iterable[Any] = ()) -> None:
         converted: list[ShoppingMall] = []
         for item in items:
             if isinstance(item, ShoppingMall):
                 converted.append(item)
             elif isinstance(item, dict):
-                converted.append(ShoppingMall.from_api_response(item))
+                converted.append(ShoppingMall.from_api_response(item)) # type: ignore
             else:
                 raise TypeError(
                     f"Expected ShoppingMall or dict, got {type(item).__name__}"
@@ -109,9 +122,7 @@ class ShoppingMallList(list[ShoppingMall]):
     def from_json_file(cls, path: str | Path) -> "ShoppingMallList":
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
-        instance = cls.__new__(cls)
-        list.__init__(instance, [ShoppingMall(**item) for item in data])
-        return instance
+        return cls(ShoppingMall(**item) for item in data)
 
 
 
@@ -156,9 +167,9 @@ if __name__ == "__main__":
     }
 
     resp = requests.post(url, headers=headers, json=payload).json()
-    malls = ShoppingMallList(resp.get("places", []))     # from raw API
-    malls.to_json_file("malls.json")                     # save
-    # malls = ShoppingMallList.from_json_file("malls.json") # load
+    malls = ShoppingMallList(resp.get("places", []))
+    malls.to_json_file("malls.json")
+    malls2 = ShoppingMallList.from_json_file("malls.json")
 
-    for mall in malls:
+    for mall in malls2:
         print(mall)
