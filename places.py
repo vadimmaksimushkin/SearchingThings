@@ -30,6 +30,7 @@ class ShoppingMall:
 
     def __init__(
         self,
+        place_id: str | None = None,
         name: str | None = None,
         address: str | None = None,
         phone: str | None = None,
@@ -45,6 +46,7 @@ class ShoppingMall:
         plus_code: str | None = None,
         email: str | None = None,
         ) -> None:
+        self.place_id = place_id
         self.name = name
         self.address = address
         self.phone = phone
@@ -82,6 +84,7 @@ class ShoppingMall:
         plus_code = data.get("plusCode", {})
 
         return cls(
+            place_id=data.get("id"),
             name=display_name.get("text"),
             address=data.get("formattedAddress"),
             phone=data.get("internationalPhoneNumber"),
