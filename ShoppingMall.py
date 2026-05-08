@@ -1,55 +1,37 @@
-from typing import Any, Iterable
+from dataclasses import dataclass, fields
+from typing import Any, ClassVar, Iterable
 import json
 from pathlib import Path
 
 from constants import NAME_TO_FIELD
 
+
+@dataclass
 class ShoppingMall:
     """Class for handling the shopping mall info"""
-    name_to_field: dict[str, str | tuple[str, str]] = NAME_TO_FIELD
+    place_id: str | None = None
+    name: str | None = None
+    address: str | None = None
+    phone: str | None = None
+    opening_hours: dict[str, Any] | None = None
+    secondary_opening_hours: list[dict[str, Any]] | None = None
+    rating: float | None = None
+    rating_count: int | None = None
+    reviews: list[dict[str, Any]] | None = None
+    website: str | None = None
+    coordinates: dict[str, float] | None = None
+    photos: list[dict[str, Any]] | None = None
+    category: list[str] | None = None
+    plus_code: str | None = None
+    email: str | None = None
 
-    def __init__(
-        self,
-        place_id: str | None = None,
-        name: str | None = None,
-        address: str | None = None,
-        phone: str | None = None,
-        opening_hours: dict[str, Any] | None = None,
-        secondary_opening_hours: list[dict[str, Any]] | None = None,
-        rating: float | None = None,
-        rating_count: int | None = None,
-        reviews: list[dict[str, Any]] | None = None,
-        website: str | None = None,
-        coordinates: dict[str, float] | None = None,
-        photos: list[dict[str, Any]] | None = None,
-        category: list[str] | None = None,
-        plus_code: str | None = None,
-        email: str | None = None,
-        ) -> None:
-        self.place_id = place_id
-        self.name = name
-        self.address = address
-        self.phone = phone
-        self.opening_hours = opening_hours
-        self.secondary_opening_hours = secondary_opening_hours
-        self.rating = rating
-        self.rating_count = rating_count
-        self.reviews = reviews
-        self.website = website
-        self.coordinates = coordinates
-        self.photos = photos
-        self.category = category
-        self.plus_code = plus_code
-        self.email = email
-
-    def __str__(self) -> str:
-        return '\n'+str(self.__dict__)
+    name_to_field: ClassVar[dict[str, str | tuple[str, str]]] = NAME_TO_FIELD
 
     @classmethod
-    def request_fields(cls, *fields: str) -> str:
+    def request_fields(cls, *names: str) -> str:
         result: list[str] = ["places.id"]
-        for field in fields:
-            api_field = cls.name_to_field.get(field)
+        for name in names:
+            api_field = cls.name_to_field.get(name)
             if api_field is None:
                 continue
             if isinstance(api_field, str):
@@ -57,6 +39,16 @@ class ShoppingMall:
             else:
                 result.extend(api_field)
         return ",".join(result)
+
+    @classmethod
+    def field_names(cls) -> set[str]:
+        return {f.name for f in fields(cls)}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ShoppingMall":
+        """Construct from a plain dict (e.g. one loaded from our own JSON), ignoring unknown keys."""
+        allowed = cls.field_names()
+        return cls(**{k: v for k, v in data.items() if k in allowed})
 
     @classmethod
     def from_api_response(cls, data: dict[str, Any]) -> "ShoppingMall":
@@ -114,8 +106,15 @@ class ShoppingMallList(list[ShoppingMall]):
     @classmethod
     def from_json_file(cls, path: str | Path) -> "ShoppingMallList":
         with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-        return cls(ShoppingMall(**item) for item in data)
+            data: Any = json.load(f)
+        if not isinstance(data, list):
+            raise ValueError(f"Expected a JSON list at {path}, got {type(data).__name__}")
+        malls: list[ShoppingMall] = []
+        for i, item in enumerate(data):
+            if not isinstance(item, dict):
+                raise TypeError(f"Item {i} in {path} is {type(item).__name__}, expected dict")
+            malls.append(ShoppingMall.from_dict(item))
+        return cls(malls)
 
 
 if __name__ == "__main__":
