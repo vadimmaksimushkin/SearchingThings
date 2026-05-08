@@ -1,7 +1,9 @@
 import asyncio
+import json
 import re
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from urllib.parse import urljoin, urlparse, urlunparse
 
 import html as html_lib
@@ -9,9 +11,13 @@ import html as html_lib
 from playwright.async_api import Browser, Page, TimeoutError as PWTimeout, async_playwright
 
 from playwright_stealth import Stealth # pyright: ignore[reportMissingTypeStubs]
-# from ShoppingMall import ShoppingMall, ShoppingMallList
+from ShoppingMall import ShoppingMallList
 
 CONCURRENCY = 10
+SAVE_EVERY = 25
+SOURCE_MALLS_PATH = "malls_5193.json"
+SCRAPED_MALLS_PATH = "malls_scraped.json"
+MERGED_MALLS_PATH = "malls_with_emails.json"
 EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
 EMAIL_RE_PATTERN = r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b"
 PAGE_TIMEOUT_MS = 10_000
@@ -47,7 +53,58 @@ class Mall:
     emails: list[str] = field(default_factory=list[str])
     error: str | None = None
 
-async def scroll_to_bottom(page: Page, max_steps: int = 20, step_pause_ms: int = 100) -> None:
+
+def load_malls_from_links(path: str | Path = "links.json") -> list[Mall]:
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    return [
+        Mall(place_id=item["place_id"], website_url=item.get("website") or "")
+        for item in data
+    ]
+
+
+def load_malls_from_shoppingmalls(path: str | Path = SOURCE_MALLS_PATH) -> list[Mall]:
+    sm_list = ShoppingMallList.from_json_file(path)
+    out: list[Mall] = []
+    for sm in sm_list:
+        if not sm.place_id or not sm.website:
+            continue
+        out.append(Mall(place_id=sm.place_id, website_url=sm.website))
+    return out
+
+
+def load_scraped(path: str | Path = SCRAPED_MALLS_PATH) -> dict[str, Mall]:
+    p = Path(path)
+    if not p.exists():
+        return {}
+    with open(p, encoding="utf-8") as f:
+        data = json.load(f)
+    return {item["place_id"]: Mall(**item) for item in data if item.get("place_id")}
+
+
+def save_malls(malls: list[Mall], path: str | Path = SCRAPED_MALLS_PATH) -> None:
+    p = Path(path)
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump([mall.__dict__ for mall in malls], f, indent=2, ensure_ascii=False)
+    tmp.replace(p)
+
+
+def update_emails_in_malls(
+    scraped: list[Mall],
+    malls_path: str | Path = "malls.json",
+    output_path: str | Path | None = None,
+) -> None:
+    by_id = {m.place_id: m for m in scraped if m.place_id and m.emails}
+    malls = ShoppingMallList.from_json_file(malls_path)
+    for sm in malls:
+        scraped_mall = by_id.get(sm.place_id or "")
+        if scraped_mall is None:
+            continue
+        sm.email = sorted(set(scraped_mall.emails))
+    malls.to_json_file(output_path if output_path is not None else malls_path)
+
+async def scroll_to_bottom(page: Page, max_steps: int = 20, step_pause_ms: int = 300) -> None:
     last_height = 0
     for _ in range(max_steps):
         height: int = await page.evaluate("""
@@ -116,10 +173,8 @@ async def scrape_mall(mall: Mall, browser: Browser):
         await Stealth().apply_stealth_async(page)
         await _goto(page, mall.website_url)
         emails = await get_emails(page)
-        print(len(emails), "main page", emails)
 
         contact_urls: set[str] = await get_contact_urls(page)
-        print(len(contact_urls), "found contact URLs", contact_urls)
 
         for contact_url in contact_urls:
             if await _goto(page, contact_url):
@@ -127,18 +182,23 @@ async def scrape_mall(mall: Mall, browser: Browser):
                 emails.update(emails_from_contact_page)
 
         mall.emails = list(emails)
-        print(len(mall.emails), "all pages", mall.emails)
     finally:
         await context.close()
 
 
 async def scrape():
-    malls = [
-        Mall("ChIJs4nT1xoC0oURRpC7xl0_Pbg", "http://www.antara.com.mx/"),
-        Mall("", ""),
-        Mall("", ""),
-        ]
+    all_malls = load_malls_from_shoppingmalls(SOURCE_MALLS_PATH)
+    done_by_id = load_scraped(SCRAPED_MALLS_PATH)
+    todo = [m for m in all_malls if m.place_id not in done_by_id]
+    done: list[Mall] = list(done_by_id.values())
+
+    print(
+        f"total={len(all_malls)} resumed={len(done)} to_scrape={len(todo)}",
+        file=sys.stderr,
+    )
+
     sem = asyncio.Semaphore(CONCURRENCY)
+    save_lock = asyncio.Lock()
 
     async def run(mall: Mall):
         async with sem:
@@ -147,13 +207,21 @@ async def scrape():
             except Exception as e:
                 mall.error = str(e)
                 print(f"  scrape_mall failed for {mall.website_url}: {e}", file=sys.stderr)
+            async with save_lock:
+                done.append(mall)
+                if len(done) % SAVE_EVERY == 0:
+                    save_malls(done, SCRAPED_MALLS_PATH)
+                    print(f"  progress: {len(done)}/{len(all_malls)}", file=sys.stderr)
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
-            await asyncio.gather(*(run(m) for m in malls))
+            await asyncio.gather(*(run(m) for m in todo))
         finally:
             await browser.close()
+
+    save_malls(done, SCRAPED_MALLS_PATH)
+    update_emails_in_malls(done, SOURCE_MALLS_PATH, MERGED_MALLS_PATH)
 
 
 if __name__ == "__main__":
