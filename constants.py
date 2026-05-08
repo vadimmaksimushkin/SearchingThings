@@ -136,4 +136,23 @@ STATES = [
     "Zacatecas",
 ]
 
+NAME_TO_FIELD: dict[str, str | tuple[str, str]] = {
+    "name": "places.displayName",
+    "address": "places.formattedAddress",
+    "phone": "places.internationalPhoneNumber",
+    "opening_hours": (
+        "places.regularOpeningHours",
+        "places.regularSecondaryOpeningHours",
+    ),
+    "rating": ("places.rating",
+                "places.userRatingCount"
+    ),
+    "reviews": "places.reviews",
+    "website": "places.websiteUri",
+    "coordinates": "places.location",
+    "photos": "places.photos",
+    "category": "places.types",
+    "plus_code": "places.plusCode",
+}
+
 PLACES_URL = "https://places.googleapis.com/v1/places:searchText"

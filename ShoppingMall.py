@@ -1,32 +1,12 @@
-from api_key import GOOGLE_MAPS_API_KEY
 from typing import Any, Iterable
-import requests
 import json
 from pathlib import Path
 
+from constants import NAME_TO_FIELD
 
 class ShoppingMall:
-    """
-    Class for handling the shopping mall info
-    """
-    name_to_field: dict[str, str | tuple[str, str]] = {
-        "name": "places.displayName",
-        "address": "places.formattedAddress",
-        "phone": "places.internationalPhoneNumber",
-        "opening_hours": (
-            "places.regularOpeningHours",
-            "places.regularSecondaryOpeningHours",
-        ),
-        "rating": ("places.rating",
-                   "places.userRatingCount"
-        ),
-        "reviews": "places.reviews",
-        "website": "places.websiteUri",
-        "coordinates": "places.location",
-        "photos": "places.photos",
-        "category": "places.types",
-        "plus_code": "places.plusCode",
-    }
+    """Class for handling the shopping mall info"""
+    name_to_field: dict[str, str | tuple[str, str]] = NAME_TO_FIELD
 
     def __init__(
         self,
@@ -82,7 +62,6 @@ class ShoppingMall:
     def from_api_response(cls, data: dict[str, Any]) -> "ShoppingMall":
         display_name = data.get("displayName", {})
         plus_code = data.get("plusCode", {})
-
         return cls(
             place_id=data.get("id"),
             name=display_name.get("text"),
@@ -111,9 +90,7 @@ class ShoppingMallList(list[ShoppingMall]):
             elif isinstance(item, dict):
                 converted.append(ShoppingMall.from_api_response(item)) # type: ignore
             else:
-                raise TypeError(
-                    f"Expected ShoppingMall or dict, got {type(item).__name__}"
-                )
+                raise TypeError(f"Expected ShoppingMall or dict, got {type(item).__name__}")
         super().__init__(converted)
 
     def dedupe(self) -> None:
@@ -141,8 +118,11 @@ class ShoppingMallList(list[ShoppingMall]):
         return cls(ShoppingMall(**item) for item in data)
 
 
-
 if __name__ == "__main__":
+    import requests
+    from api_key import GOOGLE_MAPS_API_KEY
+    from constants import PLACES_URL
+
     requested_fields = ShoppingMall.request_fields(
         "address",
         "coordinates",
@@ -162,8 +142,6 @@ if __name__ == "__main__":
         "plus_code",
         "email")
 
-    url = "https://places.googleapis.com/v1/places:searchText"
-
     headers = {
         "Content-Type": "application/json",
         "X-Goog-Api-Key": GOOGLE_MAPS_API_KEY,
@@ -173,16 +151,9 @@ if __name__ == "__main__":
     payload: dict[str, Any] = {
         "textQuery": "shopping malls in Mexico City",
         "languageCode": "en",
-        # Optional: bias to Mexico City
-        "locationBias": {
-            "circle": {
-                "center": {"latitude": 19.4326, "longitude": -99.1332},
-                "radius": 50000.0,
-            }
-        },
     }
 
-    resp = requests.post(url, headers=headers, json=payload).json()
+    resp = requests.post(PLACES_URL, headers=headers, json=payload).json()
     malls = ShoppingMallList(resp.get("places", []))
     malls.to_json_file("malls.json")
     malls2 = ShoppingMallList.from_json_file("malls.json")
