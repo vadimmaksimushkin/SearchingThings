@@ -1,0 +1,76 @@
+import asyncio
+import aiohttp
+from typing import Any
+
+from ShoppingMall import ShoppingMallList, ShoppingMall
+from api_key import GOOGLE_MAPS_API_KEY
+from constants import CITIES, STATES, PLACES_URL
+
+PAGE_SIZE = 20
+MAX_PAGES = 3
+
+requested_fields = "places.id" # cheap query
+# requested_fields = ShoppingMall.request_fields(
+#     "name",
+#     "address",
+#     "phone",
+#     "opening_hours",
+#     "rating",
+#     "reviews",
+#     "website",
+#     "coordinates",
+#     "photos",
+#     "category",
+#     "plus_code",
+#     "email")
+
+headers = {
+    "Content-Type": "application/json",
+    "X-Goog-Api-Key": GOOGLE_MAPS_API_KEY,
+    "X-Goog-FieldMask": requested_fields + ",nextPageToken",
+}
+
+query_state = "shopping malls in {state}, Mexico"
+query_city = "shopping malls in {city}, {state}"
+
+async def paginated_search(session: aiohttp.ClientSession, text_query: str, depth: int = MAX_PAGES) -> ShoppingMallList:
+    if depth > MAX_PAGES:
+        depth = MAX_PAGES
+    elif depth <= 0:
+        depth = 1
+
+    payload: dict[str, Any] = {
+        "textQuery": text_query,
+        "languageCode": "en",
+        "pageSize": PAGE_SIZE,
+    }
+
+    malls = ShoppingMallList()
+    for _ in range(depth):
+        async with session.post(PLACES_URL, headers=headers, json=payload) as resp:
+            data = await resp.json()
+        malls.extend(ShoppingMallList(data.get("places", [])))
+        token = data.get("nextPageToken")
+        if not token:
+            break
+        payload["pageToken"] = token
+    return malls
+
+async def search_cities_and_states(states: list[str], cities: list[tuple[str, str]]) -> list[ShoppingMallList]:
+    async with aiohttp.ClientSession() as session:
+        state_tasks = [paginated_search(session, query_state.format(state=state), MAX_PAGES) for state in states]
+        city_tasks = [paginated_search(session, query_city.format(city=city, state=state), MAX_PAGES) for city, state in cities]
+        return await asyncio.gather(*state_tasks, *city_tasks)
+
+
+if __name__ == "__main__":
+    results = asyncio.run(search_cities_and_states(STATES, CITIES))
+
+    all_malls = ShoppingMallList()
+    for query_result in results:
+        all_malls.extend(query_result)
+
+    print(f"Total malls: {len(all_malls)}")
+    all_malls.dedupe()
+    all_malls.to_json_file("malls.json")
+    print(f"Total unique malls: {len(all_malls)}")
