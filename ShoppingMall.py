@@ -23,7 +23,7 @@ class ShoppingMall:
     photos: list[dict[str, Any]] | None = None
     category: list[str] | None = None
     plus_code: str | None = None
-    email: str | None = None
+    email: list[str] | None = None
 
     name_to_field: ClassVar[dict[str, str | tuple[str, str]]] = NAME_TO_FIELD
 
