@@ -116,6 +116,19 @@ class ShoppingMallList(list[ShoppingMall]):
                 )
         super().__init__(converted)
 
+    def dedupe(self) -> None:
+        seen: set[str] = set()
+        unique: list[ShoppingMall] = []
+        for mall in self:
+            if mall.place_id is None:
+                unique.append(mall)
+                continue
+            if mall.place_id in seen:
+                continue
+            seen.add(mall.place_id)
+            unique.append(mall)
+        self[:] = unique
+
     def to_json_file(self, path: str | Path = "output.json") -> None:
         data = [mall.__dict__ for mall in self]
         with open(path, "w", encoding="utf-8") as f:
