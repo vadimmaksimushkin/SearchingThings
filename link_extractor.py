@@ -4,7 +4,7 @@ Later can be changed to a decent structure to have 'locks', 'attempts' and other
 import json
 from pathlib import Path
 
-from places import ShoppingMallList
+from ShoppingMall import ShoppingMallList
 
 
 def extract_links(

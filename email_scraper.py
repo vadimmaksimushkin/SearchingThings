@@ -18,7 +18,7 @@ from urllib.parse import urljoin, urlparse
 from playwright.sync_api import Page, TimeoutError as PWTimeout, sync_playwright
 from playwright_stealth import Stealth # pyright: ignore[reportMissingTypeStubs]
 
-from places import ShoppingMallList
+from ShoppingMall import ShoppingMallList
 
 
 EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
