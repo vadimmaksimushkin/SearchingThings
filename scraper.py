@@ -12,6 +12,7 @@ from playwright.async_api import Browser, Page, TimeoutError as PWTimeout, async
 
 from playwright_stealth import Stealth # pyright: ignore[reportMissingTypeStubs]
 from ShoppingMall import ShoppingMallList
+from constants import ASSET_EXTS
 
 CONCURRENCY = 10
 SAVE_EVERY = 25
@@ -156,9 +157,18 @@ async def get_contact_urls(page: Page) -> set[str]:
             contact_urls.add(normalize_url(href))
     return contact_urls
 
+def is_asset_or_sentry(email: str) -> bool:
+    domain = email.rpartition("@")[2].lower()
+    top_level_domain = domain.rsplit(".", 1)[-1]
+    if (top_level_domain in ASSET_EXTS) or ("sentry" in domain):
+        return True
+    # if "sentry" in domain:
+    #     return True
+    return False
+
 async def get_emails(page: Page) -> set[str]:
     html_decoded = html_lib.unescape(await page.content())
-    emails = set(EMAIL_RE.findall(html_decoded))
+    emails = {email for email in EMAIL_RE.findall(html_decoded) if not is_asset_or_sentry(email)}
     return emails
 
 async def scrape_mall(mall: Mall, browser: Browser):
@@ -186,10 +196,11 @@ async def scrape_mall(mall: Mall, browser: Browser):
         await context.close()
 
 
-async def scrape():
-    all_malls = load_malls_from_shoppingmalls(SOURCE_MALLS_PATH)
+async def scrapeAll():
+    # all_malls = load_malls_from_shoppingmalls(SOURCE_MALLS_PATH)
+    all_malls = load_malls_from_links()
     done_by_id = load_scraped(SCRAPED_MALLS_PATH)
-    todo = [m for m in all_malls if m.place_id not in done_by_id]
+    todo = [mall for mall in all_malls if mall.place_id not in done_by_id]
     done: list[Mall] = list(done_by_id.values())
 
     print(
@@ -225,4 +236,4 @@ async def scrape():
 
 
 if __name__ == "__main__":
-    asyncio.run(scrape())
+    asyncio.run(scrapeAll())
