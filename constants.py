@@ -136,6 +136,147 @@ STATES = [
     "Zacatecas",
 ]
 
+CDMX_COLONIAS = [
+    # Cuauhtémoc
+    "Centro", "Centro Histórico", "Roma Norte", "Roma Sur", "Condesa",
+    "Hipódromo", "Hipódromo Condesa", "Juárez", "Cuauhtémoc", "Doctores",
+    "Obrera", "Tabacalera", "Buenavista", "Guerrero", "Santa María la Ribera",
+    "San Rafael", "Tránsito", "Atlampa", "Morelos", "Ex-Hipódromo de Peralvillo",
+    "Asturias", "Algarín", "Buenos Aires", "Esperanza", "Paulino Navarro",
+
+    # Benito Juárez
+    "Nápoles", "Del Valle Norte", "Del Valle Centro", "Del Valle Sur",
+    "Narvarte Poniente", "Narvarte Oriente", "Vértiz Narvarte", "Piedad Narvarte",
+    "Atenor Salas", "Letrán Valle", "Álamos", "Portales Norte", "Portales Sur",
+    "Portales Oriente", "Niños Héroes", "Postal", "Independencia", "Moderna",
+    "Iztaccíhuatl", "Acacias", "Mixcoac", "Insurgentes Mixcoac", "San Juan",
+    "Ciudad de los Deportes", "Noche Buena", "Crédito Constructor",
+    "San Pedro de los Pinos", "Tlacoquemécatl del Valle", "Actipan",
+    "San José Insurgentes", "Xoco", "Américas Unidas", "Santa Cruz Atoyac",
+
+    # Miguel Hidalgo
+    "Polanco I Sección", "Polanco II Sección", "Polanco III Sección",
+    "Polanco IV Sección", "Polanco V Sección", "Anzures", "Granada",
+    "Ampliación Granada", "Cuauhtémoc Pensil", "Pensil Norte", "Pensil Sur",
+    "Anáhuac I Sección", "Anáhuac II Sección", "Lomas de Chapultepec I Sección",
+    "Lomas de Chapultepec II Sección", "Lomas de Chapultepec III Sección",
+    "Lomas de Chapultepec IV Sección", "Lomas Altas", "Reforma Social",
+    "Bosques de Chapultepec", "Bosques de las Lomas", "Lomas de Reforma",
+    "Tacuba", "Tacubaya", "San Miguel Chapultepec", "Escandón I Sección",
+    "Escandón II Sección", "América", "Observatorio", "Verónica Anzures",
+    "Argentina Antigua", "Argentina Poniente", "Mariano Escobedo", "Popotla",
+
+    # Coyoacán
+    "Coyoacán Centro", "Villa Coyoacán", "Del Carmen", "La Concepción",
+    "Santa Catarina", "Barrio de la Conchita", "San Lucas", "Niño Jesús",
+    "Churubusco Country Club", "Country Club", "Campestre Churubusco",
+    "Romero de Terreros", "Oxtopulco Universidad", "Copilco Universidad",
+    "Copilco El Bajo", "Copilco El Alto", "Pedregal de Santo Domingo",
+    "Ajusco", "Ajusco Huayamilpas", "Adolfo Ruiz Cortines", "CTM Culhuacán",
+    "Los Reyes", "Pueblo de los Reyes", "San Francisco Culhuacán",
+    "Ciudad Jardín", "Educación", "El Rosedal", "Prado Churubusco",
+    "Xotepingo", "Insurgentes Cuicuilco", "Bosques de Tetlameya",
+
+    # Álvaro Obregón
+    "San Ángel", "San Ángel Inn", "Tizapán San Ángel", "Chimalistac",
+    "Florida", "Guadalupe Inn", "Tlacopac", "Altavista", "Olivar de los Padres",
+    "Olivar del Conde", "Las Águilas", "Merced Gómez", "Molino de Santo Domingo",
+    "Ampliación Las Águilas", "Lomas de Plateros", "Lomas de Becerra",
+    "Santa Fe (parte AO)", "Lomas de Santa Fe", "Carlos A. Madrazo",
+    "Tlapechico", "Pueblo de Santa Lucía", "El Pirul", "Hogar y Redención",
+
+    # Cuajimalpa de Morelos
+    "Santa Fe Cuajimalpa", "Bosques de las Lomas (parte)", "El Yaqui",
+    "Contadero", "San José de los Cedros", "Cuajimalpa", "San Mateo Tlaltenango",
+    "San Lorenzo Acopilco", "San Pablo Chimalpa", "Lomas de Vista Hermosa",
+    "Loma del Padre", "Las Lajas",
+
+    # Tlalpan
+    "Tlalpan Centro", "Toriello Guerra", "Pedregal de San Ángel",
+    "Jardines en la Montaña", "Jardines del Pedregal", "Vergel del Sur",
+    "Villa Coapa", "Villa Lázaro Cárdenas", "Bosques del Pedregal",
+    "Cantil del Pedregal", "Fuentes del Pedregal", "Coapa", "Granjas Coapa",
+    "Pedregal de Carrasco", "Country Club Churubusco (parte)", "Belisario Domínguez",
+    "Miguel Hidalgo (Tlalpan)", "Héroes de Padierna", "San Pedro Mártir",
+
+    # Coyoacán / Xochimilco border & Xochimilco
+    "Xochimilco Centro", "Barrio 18", "San Gregorio Atlapulco",
+    "Santa Cruz Acalpixca", "San Lucas Xochimanca", "Santiago Tepalcatlalpan",
+    "San Lorenzo La Cebada", "San Mateo Xalpa", "Santa María Nativitas",
+    "Tepepan", "Huichapan", "La Noria", "Potrero de San Bernardino",
+
+    # Iztacalco
+    "Agrícola Oriental", "Agrícola Pantitlán", "Granjas México",
+    "Viaducto Piedad", "Ampliación Viaducto Piedad", "Jardín Balbuena",
+    "Pantitlán", "Reforma Iztaccíhuatl", "Militar Marte", "Ramos Millán",
+    "Gabriel Ramos Millán Bramadero", "Tlazintla", "Zapotla", "La Cruz",
+
+    # Venustiano Carranza
+    "Jardín Balbuena", "Aviación Civil", "Moctezuma 1ra Sección",
+    "Moctezuma 2da Sección", "Pensador Mexicano", "Peñón de los Baños",
+    "Romero Rubio", "Cuchilla Pantitlán", "Arenal 1a Sección",
+    "Arenal 2a Sección", "Arenal 3a Sección", "Arenal 4a Sección",
+    "Damián Carmona", "Magdalena Mixhuca",
+
+    # Gustavo A. Madero
+    "Lindavista", "Lindavista Norte", "Lindavista Sur", "Vallejo",
+    "Nueva Vallejo", "Aragón La Villa", "Estrella", "Industrial",
+    "Vasco de Quiroga", "Tepeyac Insurgentes", "Magdalena de las Salinas",
+    "San Bartolo Atepehuacán", "Cuautepec Barrio Alto", "Cuautepec Barrio Bajo",
+    "Martín Carrera", "Acueducto de Guadalupe", "Villa Gustavo A. Madero",
+
+    # Azcapotzalco
+    "Clavería", "Nueva Santa María", "Santa María Maninalco",
+    "Santo Tomás", "El Rosario", "Pro-Hogar", "Del Recreo", "Reynosa Tamaulipas",
+    "Tezozómoc", "San Álvaro", "San Bernabé", "Santo Domingo", "Petrolera",
+
+    # Magdalena Contreras
+    "San Jerónimo Lídice", "San Jerónimo Aculco", "La Cruz",
+    "Pueblo Nuevo Alto", "Pueblo Nuevo Bajo", "Las Cruces", "Tierra Unida",
+    "El Tanque", "Lomas Quebradas", "Padierna",
+
+    # Iztapalapa (selección — son 319)
+    "Cerro de la Estrella", "Santa María Aztahuacán", "Santa Cruz Meyehualco",
+    "San Lorenzo Tezonco", "Culhuacán CTM Sección VII", "Ejército de Oriente",
+    "Ejército Constitucionalista", "Reforma Política", "Estrella del Sur",
+    "Lomas de Zaragoza", "El Molino", "Santa Martha Acatitla",
+    "Iztapalapa Centro", "Barrio San Lucas", "Granjas San Antonio",
+
+    # Tláhuac
+    "San Pedro Tláhuac", "Santiago Zapotitlán", "San Francisco Tlaltenco",
+    "San Juan Ixtayopan", "Mixquic", "San Andrés Mixquic", "La Conchita Zapotitlán",
+    "Del Mar", "Selene",
+
+    # Milpa Alta
+    "Villa Milpa Alta", "San Pedro Atocpan", "San Pablo Oztotepec",
+    "San Salvador Cuauhtenco", "San Antonio Tecómitl", "Santa Ana Tlacotenco",
+    "San Lorenzo Tlacoyucan", "San Agustín Ohtenco", "San Juan Tepenahuac",
+]
+
+CDMX_COLONIAS_OPTIMIZED = [
+    # Top populated
+    "Centro Histórico", "Roma Norte", "Roma Sur", "Condesa",
+    "Hipódromo Condesa", "Juárez", "Doctores",
+    "Del Valle Centro", "Del Valle Norte", "Del Valle Sur",
+    "Narvarte", "Nápoles", "Mixcoac", "Portales",
+    "Polanco", "Anzures", "Lomas de Chapultepec",
+    "Tacubaya", "Escandón",
+    "Coyoacán Centro", "Del Carmen",
+    "San Ángel", "Santa Fe",
+    "Lindavista", "Aragón",
+    "Iztapalapa Centro",
+    "Tlalpan Centro", "Villa Coapa",
+    "Xochimilco Centro",
+    "Jardín Balbuena",
+    "Clavería",
+
+    # The rest
+    "Álvaro Obregón", "Azcapotzalco", "Benito Juárez", "Coyoacán",
+    "Cuajimalpa de Morelos", "Cuauhtémoc", "Gustavo A. Madero",
+    "Iztacalco", "Iztapalapa", "Magdalena Contreras", "Miguel Hidalgo",
+    "Milpa Alta", "Tláhuac", "Tlalpan", "Venustiano Carranza", "Xochimilco",
+]
+
 NAME_TO_FIELD: dict[str, str | tuple[str, str]] = {
     "name": "places.displayName",
     "address": "places.formattedAddress",
@@ -154,5 +295,13 @@ NAME_TO_FIELD: dict[str, str | tuple[str, str]] = {
     "category": "places.types",
     "plus_code": "places.plusCode",
 }
+
+ASSET_EXTS = {
+    "jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "ico", "tif", "tiff",
+    "css", "js", "mjs", "json", "xml",
+    "woff", "woff2", "ttf", "eot", "otf",
+    "mp4", "webm", "mp3", "pdf", "zip",
+}
+
 
 PLACES_URL = "https://places.googleapis.com/v1/places:searchText"

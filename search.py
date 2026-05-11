@@ -1,4 +1,5 @@
 import asyncio
+import sys
 import aiohttp
 from typing import Any
 
@@ -24,20 +25,21 @@ requested_fields = "places.id" # cheap query
 #     "plus_code",
 #     "email")
 
-headers = {
-    "Content-Type": "application/json",
-    "X-Goog-Api-Key": GOOGLE_MAPS_API_KEY,
-    "X-Goog-FieldMask": requested_fields + ",nextPageToken",
-}
 
 query_state = "shopping malls in {state}, Mexico"
 query_city = "shopping malls in {city}, {state}"
 
-async def paginated_search(session: aiohttp.ClientSession, text_query: str, depth: int = MAX_PAGES) -> ShoppingMallList:
+async def paginated_search(session: aiohttp.ClientSession, text_query: str, depth: int = MAX_PAGES, requested_fields: str = requested_fields) -> ShoppingMallList:
     if depth > MAX_PAGES:
         depth = MAX_PAGES
     elif depth <= 0:
         depth = 1
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": GOOGLE_MAPS_API_KEY,
+        "X-Goog-FieldMask": requested_fields + ",nextPageToken",
+    }
 
     payload: dict[str, Any] = {
         "textQuery": text_query,
@@ -46,9 +48,17 @@ async def paginated_search(session: aiohttp.ClientSession, text_query: str, dept
     }
 
     malls = ShoppingMallList()
-    for _ in range(depth):
-        async with session.post(PLACES_URL, headers=headers, json=payload) as resp:
-            data = await resp.json()
+    for page in range(depth):
+        try:
+            async with session.post(PLACES_URL, headers=headers, json=payload) as resp:
+                if resp.status >= 400:
+                    body = await resp.text()
+                    print(f"[HTTP {resp.status}] page={page + 1} {text_query!r}: {body[:500]}", file=sys.stderr)
+                    break
+                data = await resp.json()
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            print(f"[{type(e).__name__}] {text_query!r}: {e}", file=sys.stderr)
+            break
         malls.extend(ShoppingMallList(data.get("places", [])))
         token = data.get("nextPageToken")
         if not token:
