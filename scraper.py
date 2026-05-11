@@ -15,6 +15,7 @@ SAVE_EVERY = 25
 SOURCE_MALLS_PATH = "malls_5193.json"
 SCRAPED_MALLS_PATH = "malls_scraped.json"
 MERGED_MALLS_PATH = "malls_with_emails.json"
+LINK_PATH = "links.json"
 EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
 PAGE_TIMEOUT_MS = 10_000
 USER_AGENT = (
@@ -50,7 +51,7 @@ class Mall:
     error: str | None = None
 
 
-def load_malls_from_links(path: str | Path = "links.json") -> list[Mall]:
+def load_malls_from_links(path: str | Path = LINK_PATH) -> list[Mall]:
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
     return [
@@ -88,7 +89,7 @@ def save_malls(malls: list[Mall], path: str | Path = SCRAPED_MALLS_PATH) -> None
 
 def update_emails_in_malls(
     scraped: list[Mall],
-    malls_path: str | Path = "malls.json",
+    malls_path: str | Path = SOURCE_MALLS_PATH,
     output_path: str | Path | None = None,
 ) -> None:
     by_id = {m.place_id: m for m in scraped if m.place_id and m.emails}
@@ -191,13 +192,7 @@ async def scrape_mall(mall: Mall, browser: Browser):
         await context.close()
 
 
-async def scrape_all():
-    all_malls = load_malls_from_shoppingmalls(SOURCE_MALLS_PATH)
-    # all_malls = load_malls_from_links()
-    done_by_id = load_scraped(SCRAPED_MALLS_PATH)
-    todo = [mall for mall in all_malls if mall.place_id not in done_by_id]
-    done: list[Mall] = list(done_by_id.values())
-
+async def scrape_all(all_malls: list[Mall], done_by_id: dict[str, Mall], todo: list[Mall], done: list[Mall]):
     print(
         f"total={len(all_malls)} resumed={len(done)} to_scrape={len(todo)}",
         file=sys.stderr,
@@ -226,9 +221,22 @@ async def scrape_all():
         finally:
             await browser.close()
 
+# FIXME: add argument parsing to specify the files
+# FIXME 2: Potential rework to service based with a DB for storing the URLs to scrape
+# and a DB to push/update emails
+if __name__ == "__main__":
+    SOURCE_MALLS_PATH = "malls_5193.json"
+    SCRAPED_MALLS_PATH = "malls_scraped.json"
+    MERGED_MALLS_PATH = "malls_with_emails.json"
+    LINK_PATH = "links.json"
+
+    all_malls = load_malls_from_shoppingmalls(SOURCE_MALLS_PATH)
+    # all_malls = load_malls_from_links()
+    done_by_id = load_scraped(SCRAPED_MALLS_PATH)
+    todo = [mall for mall in all_malls if mall.place_id not in done_by_id]
+    done: list[Mall] = list(done_by_id.values())
+
+    asyncio.run(scrape_all(all_malls, done_by_id, todo, done))
+
     save_malls(done, SCRAPED_MALLS_PATH)
     update_emails_in_malls(done, SOURCE_MALLS_PATH, MERGED_MALLS_PATH)
-
-
-if __name__ == "__main__":
-    asyncio.run(scrape_all())
