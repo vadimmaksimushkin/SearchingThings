@@ -1,16 +1,12 @@
-import asyncio
-import json
-import re
-import sys
+import asyncio, json, re, sys
+
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urljoin, urlparse, urlunparse
-
 import html as html_lib
-
 from playwright.async_api import Browser, Page, TimeoutError as PWTimeout, async_playwright
-
 from playwright_stealth import Stealth # pyright: ignore[reportMissingTypeStubs]
+
 from ShoppingMall import ShoppingMallList
 from constants import ASSET_EXTS
 
@@ -20,7 +16,6 @@ SOURCE_MALLS_PATH = "malls_5193.json"
 SCRAPED_MALLS_PATH = "malls_scraped.json"
 MERGED_MALLS_PATH = "malls_with_emails.json"
 EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
-EMAIL_RE_PATTERN = r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b"
 PAGE_TIMEOUT_MS = 10_000
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -196,9 +191,9 @@ async def scrape_mall(mall: Mall, browser: Browser):
         await context.close()
 
 
-async def scrapeAll():
-    # all_malls = load_malls_from_shoppingmalls(SOURCE_MALLS_PATH)
-    all_malls = load_malls_from_links()
+async def scrape_all():
+    all_malls = load_malls_from_shoppingmalls(SOURCE_MALLS_PATH)
+    # all_malls = load_malls_from_links()
     done_by_id = load_scraped(SCRAPED_MALLS_PATH)
     todo = [mall for mall in all_malls if mall.place_id not in done_by_id]
     done: list[Mall] = list(done_by_id.values())
@@ -236,4 +231,4 @@ async def scrapeAll():
 
 
 if __name__ == "__main__":
-    asyncio.run(scrapeAll())
+    asyncio.run(scrape_all())
