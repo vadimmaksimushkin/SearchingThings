@@ -14,6 +14,7 @@ import sys
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
+from constants import ASSET_EXTS
 
 PLACEHOLDER_DOMAINS = {
     "example.com", "example.org", "example.net",
@@ -35,13 +36,6 @@ AUTOGEN_HOST_SUFFIXES = (
 
 # common typos for real TLDs
 TYPO_TLDS = {"ccom", "cpm"}
-
-ASSET_EXTS = {
-    "jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "ico", "tif", "tiff",
-    "css", "js", "mjs", "json", "xml",
-    "woff", "woff2", "ttf", "eot", "otf",
-    "mp4", "webm", "mp3", "pdf", "zip",
-}
 
 EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@([A-Za-z0-9.\-]+\.[A-Za-z]{2,})$")
 # Leading JSON-unicode-escape leftovers in the local part (e.g. `u003e`=`>`, `u002F`=`/`).
