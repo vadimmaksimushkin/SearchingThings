@@ -5,6 +5,8 @@ present in scrape_queue, success, or error. last_scanned_at keeps each run
 bounded to places added since the previous successful run.
 """
 import asyncio
+import logging
+import signal
 import sys
 import asyncpg
 from datetime import datetime
@@ -36,6 +38,8 @@ SELECT last_scanned_at FROM link_extractor_state WHERE id = 1
 UPDATE_EXTRACTOR_TIMESTAMP_SQL = """
 UPDATE link_extractor_state SET last_scanned_at = $1 WHERE id = 1
 """
+
+log = logging.getLogger(__name__)
 
 
 def normalize_website(url: str) -> str | None:
@@ -73,13 +77,14 @@ async def insert_new(queue_pool: asyncpg.Pool, batch: list[asyncpg.Record]) -> i
     return len(to_insert)
 
 
-async def extract_pending_links_batch(
+async def run_tick(
     places_pool: asyncpg.Pool,
     queue_pool: asyncpg.Pool,
-    last_scanned_at: datetime,
-    batch_size: int = BATCH_SIZE_DEFAULT,
-    ) -> tuple[datetime | None, int, int]:
-    """Stream candidates with fetched_at > last_scanned_at, filter known IDs, push new to queue"""
+    batch_size: int) -> None:
+    """One full extraction pass: read last_scanned_at, scan candidates, bump last_scanned_at"""
+    last_scanned_at: datetime = await queue_pool.fetchval(READ_EXTRACTOR_TIMESTAMP_SQL)
+    log.info(f"last_scanned_at={last_scanned_at}")
+
     last_fetched_at: datetime | None = None
     total_scanned = 0
     total_inserted = 0
@@ -94,43 +99,75 @@ async def extract_pending_links_batch(
                     total_inserted += await insert_new(queue_pool, buffer)
                     total_scanned += len(buffer)
                     last_fetched_at = buffer[-1]["fetched_at"]
-                    print(f"  scanned={total_scanned} inserted={total_inserted}", file=sys.stderr)
+                    log.info(f"  scanned={total_scanned} inserted={total_inserted}")
                     buffer.clear()
             if buffer:
                 total_inserted += await insert_new(queue_pool, buffer)
                 total_scanned += len(buffer)
                 last_fetched_at = buffer[-1]["fetched_at"]
-                print(f"  scanned={total_scanned} inserted={total_inserted}", file=sys.stderr)
-
-    return last_fetched_at, total_scanned, total_inserted
+                log.info(f"  scanned={total_scanned} inserted={total_inserted}")
 
 
-async def main(batch_size: int = BATCH_SIZE_DEFAULT) -> None:
-    """Check last_scanned_at, push new candidates."""
+    #equals that link extractor performed the task whether successfully or not
+    if last_fetched_at is not None:
+        await queue_pool.execute(UPDATE_EXTRACTOR_TIMESTAMP_SQL, last_fetched_at)
+        log.info(f"Timestamp bumped to {last_fetched_at}")
+    else:
+        log.info("No new candidates")
+
+    log.info(f"Summary: scanned={total_scanned} inserted={total_inserted}")
+
+
+async def run_service(
+    places_pool: asyncpg.Pool,
+    queue_pool: asyncpg.Pool,
+    batch_size: int,
+    interval: int) -> None:
+    """Loop run_tick every 'interval' seconds until SIGTERM/SIGINT"""
+    main_task = asyncio.current_task()
+    if not main_task:
+        log.critical("main_task is None")
+        return None
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, main_task.cancel)
+
+    log.info(f"Service started, interval={interval}s")
+    while True:
+        try:
+            await run_tick(places_pool, queue_pool, batch_size)
+            await asyncio.sleep(float(interval))
+        except Exception as e:
+            log.exception("tick failed ", e)
+        except asyncio.CancelledError:
+            break
+    log.info("Shutdown clean")
+
+
+async def main(batch_size: int, interval: int | None) -> None:
+    """Runs one time if interval is None, works like service otherwise"""
     async with asyncpg.create_pool(PLACES_DB_URL, min_size=1, max_size=2) as places_pool:
         async with asyncpg.create_pool(QUEUE_DB_URL, min_size=1, max_size=2) as queue_pool:
-            last_scanned_at: datetime = await queue_pool.fetchval(READ_EXTRACTOR_TIMESTAMP_SQL)
-            print(f"last_scanned_at={last_scanned_at}", file=sys.stderr)
-
-            last_fetched_at, total_scanned, total_inserted = await extract_pending_links_batch(
-                places_pool, queue_pool, last_scanned_at, batch_size
-            )
-
-            #equals that link extractor performed the task whether successfully or not
-            if last_fetched_at is not None:
-                await queue_pool.execute(UPDATE_EXTRACTOR_TIMESTAMP_SQL, last_fetched_at)
-                print(f"Timestamp bumped to {last_fetched_at}", file=sys.stderr)
+            if interval is None:
+                await run_tick(places_pool, queue_pool, batch_size)
             else:
-                print("no new candidates", file=sys.stderr)
-
-            print(f"Summary: scanned={total_scanned} inserted={total_inserted}", file=sys.stderr)
+                await run_service(places_pool, queue_pool, batch_size, interval)
 
 
 if __name__ == "__main__":
     import argparse
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        stream=sys.stderr,
+    )
     argument_parser = argparse.ArgumentParser()
-    argument_parser.add_argument("--batch-size", default=BATCH_SIZE_DEFAULT, type=int)
+    argument_parser.add_argument("--batch-size", default=BATCH_SIZE_DEFAULT, type=int,
+        help=f"Specity the batch size, default {BATCH_SIZE_DEFAULT}")
+    argument_parser.add_argument("--interval", default=None, type=int,
+        help="Poll interval in seconds. If omitted, run once and exit.")
     args = argument_parser.parse_args()
     batch_size = args.batch_size
+    interval = args.interval
 
-    asyncio.run(main(batch_size))
+    asyncio.run(main(batch_size, interval))
