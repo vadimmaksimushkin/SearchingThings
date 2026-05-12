@@ -1,27 +1,35 @@
-import asyncio, json, re, sys
+"""Long-running email scraper service.
 
-from dataclasses import dataclass, field
-from pathlib import Path
-from urllib.parse import urljoin, urlparse, urlunparse
+Drains scrape_queue: each worker atomically claims a row, scrapes the site
+for emails, then writes the outcome to the success or error table and
+finalizes the attempt_log audit row. Connects only to the queue DB.
+"""
+import asyncio
 import html as html_lib
-from playwright.async_api import Browser, Page, TimeoutError as PWTimeout, async_playwright
-from playwright_stealth import Stealth # pyright: ignore[reportMissingTypeStubs]
+import re
+import sys
+from dataclasses import dataclass, field
+from datetime import timedelta
+from urllib.parse import urljoin, urlparse, urlunparse
 
-from ShoppingMall import ShoppingMallList
+import asyncpg
+
+from playwright.async_api import Browser, Page, TimeoutError as PWTimeout, async_playwright
+from playwright_stealth import Stealth  # pyright: ignore[reportMissingTypeStubs]
+
+from api_key import QUEUE_DB_URL
 from constants import ASSET_EXTS
 
-CONCURRENCY = 10
-SAVE_EVERY = 25
-SOURCE_MALLS_PATH = "malls_5193.json"
-SCRAPED_MALLS_PATH = "malls_scraped.json"
-MERGED_MALLS_PATH = "malls_with_emails.json"
-LINK_PATH = "links.json"
-EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
+WORKER_COUNT = 10
+MAX_ATTEMPTS = 3
+LOCK_DURATION = timedelta(minutes=5)
+POLL_INTERVAL_S = 1.0
 PAGE_TIMEOUT_MS = 10_000
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
+EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
 
 CONTACT_KEYWORDS = [
     # Spanish - contact
@@ -34,72 +42,36 @@ CONTACT_KEYWORDS = [
     "empresa", "informacion", "información",
     "directorio", "directorio-de-contacto",
     "atencion", "atención", "atencion-a-clientes",
-    "ayuda","conocenos",
+    "ayuda", "conocenos",
     # English
     "contact", "contact-us", "contactus",
     "about", "about-us", "aboutus",
     "info",
 ]
-CONTACT_RE = re.compile(r"(?i)(?:^|[/\-_?#=])(" + "|".join(re.escape(k) for k in CONTACT_KEYWORDS) + r")(?:$|[/\-_?#&.])")
+CONTACT_RE = re.compile(
+    r"(?i)(?:^|[/\-_?#=])("
+    + "|".join(re.escape(k) for k in CONTACT_KEYWORDS)
+    + r")(?:$|[/\-_?#&.])"
+)
 
 
 @dataclass
-class Mall:
+class ClaimedJob:
+    id: int
     place_id: str
-    website_url: str
-    emails: list[str] = field(default_factory=list[str])
-    error: str | None = None
+    website: str
+    attempts: int
 
 
-def load_malls_from_links(path: str | Path = LINK_PATH) -> list[Mall]:
-    with open(path, encoding="utf-8") as f:
-        data = json.load(f)
-    return [
-        Mall(place_id=item["place_id"], website_url=item.get("website") or "")
-        for item in data
-    ]
+@dataclass
+class ScrapeResult:
+    success: bool
+    emails: list[str] = field(default_factory=list)
+    final_website: str = ""
+    reason: str = "ok"
 
 
-def load_malls_from_shoppingmalls(path: str | Path = SOURCE_MALLS_PATH) -> list[Mall]:
-    sm_list = ShoppingMallList.from_json_file(path)
-    out: list[Mall] = []
-    for sm in sm_list:
-        if not sm.place_id or not sm.website:
-            continue
-        out.append(Mall(place_id=sm.place_id, website_url=sm.website))
-    return out
-
-
-def load_scraped(path: str | Path = SCRAPED_MALLS_PATH) -> dict[str, Mall]:
-    p = Path(path)
-    if not p.exists():
-        return {}
-    with open(p, encoding="utf-8") as f:
-        data = json.load(f)
-    return {item["place_id"]: Mall(**item) for item in data if item.get("place_id")}
-
-
-def save_malls(malls: list[Mall], path: str | Path = SCRAPED_MALLS_PATH) -> None:
-    p = Path(path)
-    tmp = p.with_suffix(p.suffix + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump([mall.__dict__ for mall in malls], f, indent=2, ensure_ascii=False)
-    tmp.replace(p)
-
-
-def update_emails_in_malls(
-    scraped: list[Mall],
-    malls_path: str | Path = SOURCE_MALLS_PATH,
-    output_path: str | Path | None = None,
-) -> None:
-    by_id = {m.place_id: m for m in scraped if m.place_id and m.emails}
-    malls = ShoppingMallList.from_json_file(malls_path)
-    for sm in malls:
-        scraped_mall = by_id.get(sm.place_id or "")
-        if scraped_mall is None:
-            continue
-        sm.email = sorted(set(scraped_mall.emails))
-    malls.to_json_file(output_path if output_path is not None else malls_path)
+# ---- page helpers ----
 
 async def scroll_to_bottom(page: Page, max_steps: int = 20, step_pause_ms: int = 300) -> None:
     last_height = 0
@@ -112,12 +84,12 @@ async def scroll_to_bottom(page: Page, max_steps: int = 20, step_pause_ms: int =
                 document.documentElement.offsetHeight
             )
         """)
-        # height: int = await page.evaluate("() => document.body.scrollHeight")
         if height == last_height:
             break
         await page.evaluate(f"window.scrollTo(0, {height})")
         await page.wait_for_timeout(step_pause_ms)
         last_height = height
+
 
 async def _goto(page: Page, url: str) -> bool:
     try:
@@ -127,47 +99,46 @@ async def _goto(page: Page, url: str) -> bool:
     except Exception as e:
         print(f"  goto error on {url}: {e}", file=sys.stderr)
         return False
-
     try:
         await scroll_to_bottom(page)
     except Exception as e:
         print(f"  scroll error on {url}: {e}", file=sys.stderr)
-
     return True
+
 
 def normalize_url(url: str) -> str:
     p = urlparse(url)
     path = p.path.rstrip("/") or "/"
     return urlunparse((p.scheme, p.netloc, path, "", "", ""))
 
+
 async def get_contact_urls(page: Page) -> set[str]:
     urls = await page.locator("a[href]").all()
     contact_urls: set[str] = set()
-
     for url in urls:
         href = await url.get_attribute("href")
         if not href or href.startswith(("javascript:", "mailto:", "tel:", "#")):
             continue
-        href = urljoin(page.url, href)  # Make absolute if not
+        href = urljoin(page.url, href)
         if CONTACT_RE.search(href):
             contact_urls.add(normalize_url(href))
     return contact_urls
 
+
 def is_asset_or_sentry(email: str) -> bool:
     domain = email.rpartition("@")[2].lower()
     top_level_domain = domain.rsplit(".", 1)[-1]
-    if (top_level_domain in ASSET_EXTS) or ("sentry" in domain):
-        return True
-    # if "sentry" in domain:
-    #     return True
-    return False
+    return (top_level_domain in ASSET_EXTS) or ("sentry" in domain)
+
 
 async def get_emails(page: Page) -> set[str]:
     html_decoded = html_lib.unescape(await page.content())
-    emails = {email for email in EMAIL_RE.findall(html_decoded) if not is_asset_or_sentry(email)}
-    return emails
+    return {e for e in EMAIL_RE.findall(html_decoded) if not is_asset_or_sentry(e)}
 
-async def scrape_mall(mall: Mall, browser: Browser):
+
+# ---- the per-site scrape ----
+
+async def scrape_one_site(browser: Browser, website: str) -> ScrapeResult:
     context = await browser.new_context(
         user_agent=USER_AGENT,
         locale="en-US",
@@ -177,66 +148,205 @@ async def scrape_mall(mall: Mall, browser: Browser):
     try:
         page = await context.new_page()
         await Stealth().apply_stealth_async(page)
-        await _goto(page, mall.website_url)
-        emails = await get_emails(page)
 
-        contact_urls: set[str] = await get_contact_urls(page)
+        if not await _goto(page, website):
+            return ScrapeResult(
+                success=False,
+                final_website=website,
+                reason="main_page_load_failed",
+            )
+
+        final_website = page.url
+        emails = await get_emails(page)
+        contact_urls = await get_contact_urls(page)
 
         for contact_url in contact_urls:
             if await _goto(page, contact_url):
-                emails_from_contact_page = await get_emails(page)
-                emails.update(emails_from_contact_page)
+                emails.update(await get_emails(page))
 
-        mall.emails = list(emails)
+        return ScrapeResult(
+            success=True,
+            emails=sorted(emails),
+            final_website=final_website,
+            reason="ok",
+        )
     finally:
         await context.close()
 
 
-async def scrape_all(all_malls: list[Mall], done_by_id: dict[str, Mall], todo: list[Mall], done: list[Mall]):
-    print(
-        f"total={len(all_malls)} resumed={len(done)} to_scrape={len(todo)}",
-        file=sys.stderr,
-    )
+# ---- DB operations ----
 
-    sem = asyncio.Semaphore(CONCURRENCY)
-    save_lock = asyncio.Lock()
+CLAIM_SQL = """
+UPDATE scrape_queue
+SET locked_until = now() + $1,
+    attempts = attempts + 1,
+    last_attempt_at = now()
+WHERE id = (
+    SELECT id FROM scrape_queue
+    WHERE locked_until IS NULL OR locked_until < now()
+    ORDER BY id
+    LIMIT 1
+    FOR UPDATE SKIP LOCKED
+)
+RETURNING id, place_id, website, attempts
+"""
 
-    async def run(mall: Mall):
-        async with sem:
-            try:
-                await scrape_mall(mall, browser)
-            except Exception as e:
-                mall.error = str(e)
-                print(f"  scrape_mall failed for {mall.website_url}: {e}", file=sys.stderr)
-            async with save_lock:
-                done.append(mall)
-                if len(done) % SAVE_EVERY == 0:
-                    save_malls(done, SCRAPED_MALLS_PATH)
-                    print(f"  progress: {len(done)}/{len(all_malls)}", file=sys.stderr)
+LOG_START_SQL = """
+INSERT INTO attempt_log (place_id, attempt_no, website)
+VALUES ($1, $2, $3)
+ON CONFLICT (place_id, attempt_no) DO UPDATE SET
+    started_at  = now(),
+    finished_at = NULL,
+    outcome     = 'unknown',
+    reason      = 'scraper did not update the log',
+    website     = EXCLUDED.website
+"""
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+LOG_FINISH_SQL = """
+UPDATE attempt_log
+SET finished_at = now(), outcome = $3, reason = $4
+WHERE place_id = $1 AND attempt_no = $2
+"""
+
+INSERT_SUCCESS_SQL = """
+INSERT INTO success (place_id, emails, final_website, attempts)
+VALUES ($1, $2, $3, $4)
+"""
+
+INSERT_ERROR_SQL = """
+INSERT INTO error (place_id, website, attempts, reason)
+VALUES ($1, $2, $3, $4)
+"""
+
+
+async def claim_and_log_start(pool: asyncpg.Pool) -> ClaimedJob | None:
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(CLAIM_SQL, LOCK_DURATION)
+            if row is None:
+                return None
+            job = ClaimedJob(
+                id=row["id"],
+                place_id=row["place_id"],
+                website=row["website"],
+                attempts=row["attempts"],
+            )
+            await conn.execute(LOG_START_SQL, job.place_id, job.attempts, job.website)
+            return job
+
+
+async def record_outcome(
+    pool: asyncpg.Pool, job: ClaimedJob, result: ScrapeResult
+) -> None:
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            outcome = "success" if result.success else "error"
+            await conn.execute(
+                LOG_FINISH_SQL, job.place_id, job.attempts, outcome, result.reason
+            )
+
+            if result.success:
+                await conn.execute(
+                    "DELETE FROM scrape_queue WHERE place_id = $1", job.place_id
+                )
+                await conn.execute(
+                    INSERT_SUCCESS_SQL,
+                    job.place_id,
+                    result.emails or None,
+                    result.final_website,
+                    job.attempts,
+                )
+            elif job.attempts >= MAX_ATTEMPTS:
+                await conn.execute(
+                    "DELETE FROM scrape_queue WHERE place_id = $1", job.place_id
+                )
+                await conn.execute(
+                    INSERT_ERROR_SQL,
+                    job.place_id,
+                    job.website,
+                    job.attempts,
+                    result.reason,
+                )
+            else:
+                await conn.execute(
+                    "UPDATE scrape_queue SET locked_until = NULL WHERE place_id = $1",
+                    job.place_id,
+                )
+
+
+# ---- worker loop ----
+
+async def worker_loop(worker_id: int, browser: Browser, pool: asyncpg.Pool) -> None:
+    while True:
         try:
-            await asyncio.gather(*(run(m) for m in todo))
-        finally:
-            await browser.close()
+            job = await claim_and_log_start(pool)
+        except Exception as e:
+            print(f"w{worker_id} claim failed: {e!r}", file=sys.stderr)
+            await asyncio.sleep(POLL_INTERVAL_S)
+            continue
+        if job is None:
+            await asyncio.sleep(POLL_INTERVAL_S)
+            continue
 
-# FIXME: add argument parsing to specify the files
-# FIXME 2: Potential rework to service based with a DB for storing the URLs to scrape
-# and a DB to push/update emails
+        print(
+            f"w{worker_id} claim {job.place_id} attempt={job.attempts}",
+            file=sys.stderr,
+        )
+        try:
+            result = await scrape_one_site(browser, job.website)
+        except Exception as e:
+            result = ScrapeResult(
+                success=False, final_website=job.website, reason=repr(e)
+            )
+
+        try:
+            await record_outcome(pool, job, result)
+        except Exception as e:
+            print(
+                f"w{worker_id} record_outcome failed for {job.place_id}: {e!r}",
+                file=sys.stderr,
+            )
+            continue
+
+        if result.success:
+            print(
+                f"w{worker_id} success {job.place_id} emails={len(result.emails)}",
+                file=sys.stderr,
+            )
+        elif job.attempts >= MAX_ATTEMPTS:
+            print(
+                f"w{worker_id} terminal {job.place_id} reason={result.reason}",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"w{worker_id} retry {job.place_id} attempt={job.attempts} "
+                f"reason={result.reason}",
+                file=sys.stderr,
+            )
+
+
+async def main() -> None:
+    pool = await asyncpg.create_pool(
+        QUEUE_DB_URL, min_size=2, max_size=WORKER_COUNT + 2
+    )
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            try:
+                print(
+                    f"scraper started: workers={WORKER_COUNT} "
+                    f"max_attempts={MAX_ATTEMPTS}",
+                    file=sys.stderr,
+                )
+                await asyncio.gather(
+                    *(worker_loop(i, browser, pool) for i in range(WORKER_COUNT))
+                )
+            finally:
+                await browser.close()
+    finally:
+        await pool.close()
+
+
 if __name__ == "__main__":
-    SOURCE_MALLS_PATH = "malls_5193.json"
-    SCRAPED_MALLS_PATH = "malls_scraped.json"
-    MERGED_MALLS_PATH = "malls_with_emails.json"
-    LINK_PATH = "links.json"
-
-    all_malls = load_malls_from_shoppingmalls(SOURCE_MALLS_PATH)
-    # all_malls = load_malls_from_links()
-    done_by_id = load_scraped(SCRAPED_MALLS_PATH)
-    todo = [mall for mall in all_malls if mall.place_id not in done_by_id]
-    done: list[Mall] = list(done_by_id.values())
-
-    asyncio.run(scrape_all(all_malls, done_by_id, todo, done))
-
-    save_malls(done, SCRAPED_MALLS_PATH)
-    update_emails_in_malls(done, SOURCE_MALLS_PATH, MERGED_MALLS_PATH)
+    asyncio.run(main())
