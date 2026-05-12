@@ -1,26 +1,37 @@
-"""One-shot link extractor.
-
-Reads places from the main DB and inserts their websites into the scraper's
-scrape_queue for any place not already present in scrape_queue, success, or
-error. Purely additive: errored places stay in error, successful places stay
-in success. Re-runnable.
 """
+Link extractor that looks up places in main DB and insert them into scraper's
+scrape_queue if they are not already present here or in success and error tables
+"""
+# FIXME: rework not to store large data in RAM
 import asyncio
 import sys
-from urllib.parse import urlparse, urlunparse
-
 import asyncpg
+from urllib.parse import urlparse, urlunparse
 
 from api_key import PLACES_DB_URL, QUEUE_DB_URL
 
-BATCH = 1000
+
+BATCH_SIZE_DEFAULT = 1000
+INSERT_SQL = """
+INSERT INTO scrape_queue (place_id, website) VALUES ($1, $2)
+ON CONFLICT (place_id) DO NOTHING
+"""
+FETCH_FROM_MAIN_SQL = """
+SELECT place_id, website FROM places
+WHERE website IS NOT NULL AND website != ''
+"""
+FETCH_PLACE_ID_FROM_QUEUE_SQL = """
+SELECT place_id FROM scrape_queue
+UNION SELECT place_id FROM success
+UNION SELECT place_id FROM error
+"""
 
 
-def normalize_website(url: str) -> str:
+def normalize_website(url: str) -> str | None:
     """Add scheme if missing, lowercase host. Path/query/fragment untouched."""
     url = url.strip()
     if not url:
-        return url
+        return None
     if "://" not in url:
         url = "https://" + url.lstrip("/")
     p = urlparse(url)
@@ -28,75 +39,63 @@ def normalize_website(url: str) -> str:
 
 
 async def fetch_candidates(pool: asyncpg.Pool) -> dict[str, str]:
-    rows = await pool.fetch(
-        "SELECT place_id, website FROM places "
-        "WHERE website IS NOT NULL AND website != ''"
-    )
-    return {r["place_id"]: normalize_website(r["website"]) for r in rows}
+    """Returns a dictionary with {place_id, website} keys from main database"""
+    rows = await pool.fetch(FETCH_FROM_MAIN_SQL)
+    candidates: dict[str, str] = {}
+    for row in rows:
+        place_id = row["place_id"]
+        website = normalize_website(row["website"])
+        if website:
+            candidates[place_id] = website
+    return candidates
 
 
 async def fetch_known(pool: asyncpg.Pool) -> set[str]:
-    rows = await pool.fetch(
-        "SELECT place_id FROM scrape_queue "
-        "UNION SELECT place_id FROM success "
-        "UNION SELECT place_id FROM error"
-    )
+    """Returns set of place_id from queue database"""
+    rows = await pool.fetch(FETCH_PLACE_ID_FROM_QUEUE_SQL)
     return {r["place_id"] for r in rows}
 
 
-INSERT_SQL = """
-INSERT INTO scrape_queue (place_id, website) VALUES ($1, $2)
-ON CONFLICT (place_id) DO NOTHING
-"""
-
-
-async def enqueue(pool: asyncpg.Pool, rows: list[tuple[str, str]]) -> None:
+async def enqueue(pool: asyncpg.Pool, rows: list[tuple[str, str]], batch_size: int = BATCH_SIZE_DEFAULT) -> None:
+    """Pushes rows of (place_id, website) into scrape_queue"""
     total = len(rows)
     if total == 0:
         return
     async with pool.acquire() as conn:
-        for i in range(0, total, BATCH):
-            chunk = rows[i : i + BATCH]
+        for i in range(0, total, batch_size):
+            chunk = rows[i : i + batch_size]
             async with conn.transaction():
                 await conn.executemany(INSERT_SQL, chunk)
-            print(f"  enqueued: {min(i + BATCH, total)}/{total}", file=sys.stderr)
+            print(f"  enqueued: {i + len(chunk)}/{total}", file=sys.stderr)
 
 
 async def enqueue_pending(
     places_pool: asyncpg.Pool,
     queue_pool: asyncpg.Pool,
-) -> dict[str, int]:
+    batch_size: int = BATCH_SIZE_DEFAULT) -> None:
+    """Fetches place_id, already scraped place_id and pushes new to queue DB"""
     candidates = await fetch_candidates(places_pool)
     known = await fetch_known(queue_pool)
-    new_ids = candidates.keys() - known
-    to_insert = [(pid, candidates[pid]) for pid in new_ids]
+    new_ids: set[str] = candidates.keys() - known
+    rows_to_insert = [(place_id, candidates[place_id]) for place_id in new_ids]
 
-    print(
-        f"candidates={len(candidates)} "
-        f"already_known={len(known)} "
-        f"to_enqueue={len(to_insert)}",
-        file=sys.stderr,
-    )
-    await enqueue(queue_pool, to_insert)
-
-    return {
-        "candidates": len(candidates),
-        "already_known": len(known),
-        "newly_queued": len(to_insert),
-    }
+    print(f"candidates={len(candidates)} already_known={len(known)}",
+          f"to_enqueue={len(rows_to_insert)}", file=sys.stderr)
+    await enqueue(queue_pool, rows_to_insert, batch_size)
 
 
-async def main() -> None:
-    places_pool = await asyncpg.create_pool(PLACES_DB_URL, min_size=1, max_size=2)
-    queue_pool = await asyncpg.create_pool(QUEUE_DB_URL, min_size=1, max_size=2)
-    try:
-        result = await enqueue_pending(places_pool, queue_pool)
-        print(file=sys.stderr)
-        print(f"Summary: {result}", file=sys.stderr)
-    finally:
-        await places_pool.close()
-        await queue_pool.close()
+async def main(batch_size: int = BATCH_SIZE_DEFAULT) -> None:
+    """Main function that creates connection pools, extracts and pushes links"""
+    async with asyncpg.create_pool(PLACES_DB_URL, min_size=1, max_size=2) as places_pool:
+        async with asyncpg.create_pool(QUEUE_DB_URL, min_size=1, max_size=2) as queue_pool:
+            await enqueue_pending(places_pool, queue_pool, batch_size)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import argparse
+    argument_parser = argparse.ArgumentParser()
+    argument_parser.add_argument("--batch-size", default=BATCH_SIZE_DEFAULT, type=int)
+    args = argument_parser.parse_args()
+    batch_size = args.batch_size
+
+    asyncio.run(main(batch_size))
