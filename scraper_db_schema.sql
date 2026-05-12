@@ -34,3 +34,9 @@ CREATE TABLE attempt_log (
     reason      TEXT NOT NULL DEFAULT 'scraper did not update the log',
     PRIMARY KEY (place_id, attempt_no)
 );
+
+CREATE TABLE link_extractor_state (
+    id              SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    last_scanned_at TIMESTAMPTZ NOT NULL DEFAULT 'epoch'
+);
+INSERT INTO link_extractor_state (id) VALUES (1) ON CONFLICT DO NOTHING;

@@ -1,29 +1,40 @@
 """
-Link extractor that looks up places in main DB and insert them into scraper's
-scrape_queue if they are not already present here or in success and error tables
+Link extractor that streams places in batches from the main DB with
+fetched_at > last_scanned_at and pushes them to scrape_queue if not already
+present in scrape_queue, success, or error. last_scanned_at keeps each run
+bounded to places added since the previous successful run.
 """
-# FIXME: rework not to store large data in RAM
 import asyncio
 import sys
 import asyncpg
+from datetime import datetime
 from urllib.parse import urlparse, urlunparse
 
 from api_key import PLACES_DB_URL, QUEUE_DB_URL
 
 
 BATCH_SIZE_DEFAULT = 1000
+
+FETCH_CANDIDATES_SQL = """
+SELECT place_id, website, fetched_at FROM places
+WHERE website IS NOT NULL AND website <> ''
+  AND fetched_at > $1
+ORDER BY fetched_at
+"""
+FETCH_KNOWN_SQL = """
+SELECT place_id FROM scrape_queue WHERE place_id = ANY($1)
+UNION SELECT place_id FROM success WHERE place_id = ANY($1)
+UNION SELECT place_id FROM error   WHERE place_id = ANY($1)
+"""
 INSERT_SQL = """
 INSERT INTO scrape_queue (place_id, website) VALUES ($1, $2)
 ON CONFLICT (place_id) DO NOTHING
 """
-FETCH_FROM_MAIN_SQL = """
-SELECT place_id, website FROM places
-WHERE website IS NOT NULL AND website != ''
+READ_EXTRACTOR_TIMESTAMP_SQL = """
+SELECT last_scanned_at FROM link_extractor_state WHERE id = 1
 """
-FETCH_PLACE_ID_FROM_QUEUE_SQL = """
-SELECT place_id FROM scrape_queue
-UNION SELECT place_id FROM success
-UNION SELECT place_id FROM error
+UPDATE_EXTRACTOR_TIMESTAMP_SQL = """
+UPDATE link_extractor_state SET last_scanned_at = $1 WHERE id = 1
 """
 
 
@@ -38,57 +49,81 @@ def normalize_website(url: str) -> str | None:
     return urlunparse((p.scheme, p.netloc.lower(), p.path, p.params, p.query, p.fragment))
 
 
-async def fetch_candidates(pool: asyncpg.Pool) -> dict[str, str]:
-    """Returns a dictionary with {place_id, website} keys from main database"""
-    rows = await pool.fetch(FETCH_FROM_MAIN_SQL)
-    candidates: dict[str, str] = {}
-    for row in rows:
-        place_id = row["place_id"]
+async def insert_new(queue_pool: asyncpg.Pool, batch: list[asyncpg.Record]) -> int:
+    """Push a candidate (place_id, website) in batch to scrape_queue that are not present
+    in queue DB, return inserted count"""
+    place_ids = [row["place_id"] for row in batch]
+    known_rows = await queue_pool.fetch(FETCH_KNOWN_SQL, place_ids)
+    known = {row["place_id"] for row in known_rows}
+    to_insert: list[tuple[str, str]] = []
+
+    for row in batch:
+        if row["place_id"] in known:
+            continue
         website = normalize_website(row["website"])
         if website:
-            candidates[place_id] = website
-    return candidates
+            to_insert.append((row["place_id"], website))
+
+    if not to_insert:
+        return 0
+
+    async with queue_pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.executemany(INSERT_SQL, to_insert)
+    return len(to_insert)
 
 
-async def fetch_known(pool: asyncpg.Pool) -> set[str]:
-    """Returns set of place_id from queue database"""
-    rows = await pool.fetch(FETCH_PLACE_ID_FROM_QUEUE_SQL)
-    return {r["place_id"] for r in rows}
-
-
-async def enqueue(pool: asyncpg.Pool, rows: list[tuple[str, str]], batch_size: int = BATCH_SIZE_DEFAULT) -> None:
-    """Pushes rows of (place_id, website) into scrape_queue"""
-    total = len(rows)
-    if total == 0:
-        return
-    async with pool.acquire() as conn:
-        for i in range(0, total, batch_size):
-            chunk = rows[i : i + batch_size]
-            async with conn.transaction():
-                await conn.executemany(INSERT_SQL, chunk)
-            print(f"  enqueued: {i + len(chunk)}/{total}", file=sys.stderr)
-
-
-async def enqueue_pending(
+async def extract_pending_links_batch(
     places_pool: asyncpg.Pool,
     queue_pool: asyncpg.Pool,
-    batch_size: int = BATCH_SIZE_DEFAULT) -> None:
-    """Fetches place_id, already scraped place_id and pushes new to queue DB"""
-    candidates = await fetch_candidates(places_pool)
-    known = await fetch_known(queue_pool)
-    new_ids: set[str] = candidates.keys() - known
-    rows_to_insert = [(place_id, candidates[place_id]) for place_id in new_ids]
+    last_scanned_at: datetime,
+    batch_size: int = BATCH_SIZE_DEFAULT,
+    ) -> tuple[datetime | None, int, int]:
+    """Stream candidates with fetched_at > last_scanned_at, filter known IDs, push new to queue"""
+    last_fetched_at: datetime | None = None
+    total_scanned = 0
+    total_inserted = 0
 
-    print(f"candidates={len(candidates)} already_known={len(known)}",
-          f"to_enqueue={len(rows_to_insert)}", file=sys.stderr)
-    await enqueue(queue_pool, rows_to_insert, batch_size)
+    async with places_pool.acquire() as conn:
+        async with conn.transaction():
+            cursor = conn.cursor(FETCH_CANDIDATES_SQL, last_scanned_at, prefetch=batch_size)
+            buffer: list[asyncpg.Record] = []
+            async for row in cursor:
+                buffer.append(row)
+                if len(buffer) >= batch_size:
+                    total_inserted += await insert_new(queue_pool, buffer)
+                    total_scanned += len(buffer)
+                    last_fetched_at = buffer[-1]["fetched_at"]
+                    print(f"  scanned={total_scanned} inserted={total_inserted}", file=sys.stderr)
+                    buffer.clear()
+            if buffer:
+                total_inserted += await insert_new(queue_pool, buffer)
+                total_scanned += len(buffer)
+                last_fetched_at = buffer[-1]["fetched_at"]
+                print(f"  scanned={total_scanned} inserted={total_inserted}", file=sys.stderr)
+
+    return last_fetched_at, total_scanned, total_inserted
 
 
 async def main(batch_size: int = BATCH_SIZE_DEFAULT) -> None:
-    """Main function that creates connection pools, extracts and pushes links"""
+    """Check last_scanned_at, push new candidates."""
     async with asyncpg.create_pool(PLACES_DB_URL, min_size=1, max_size=2) as places_pool:
         async with asyncpg.create_pool(QUEUE_DB_URL, min_size=1, max_size=2) as queue_pool:
-            await enqueue_pending(places_pool, queue_pool, batch_size)
+            last_scanned_at: datetime = await queue_pool.fetchval(READ_EXTRACTOR_TIMESTAMP_SQL)
+            print(f"last_scanned_at={last_scanned_at}", file=sys.stderr)
+
+            last_fetched_at, total_scanned, total_inserted = await extract_pending_links_batch(
+                places_pool, queue_pool, last_scanned_at, batch_size
+            )
+
+            #equals that link extractor performed the task whether successfully or not
+            if last_fetched_at is not None:
+                await queue_pool.execute(UPDATE_EXTRACTOR_TIMESTAMP_SQL, last_fetched_at)
+                print(f"Timestamp bumped to {last_fetched_at}", file=sys.stderr)
+            else:
+                print("no new candidates", file=sys.stderr)
+
+            print(f"Summary: scanned={total_scanned} inserted={total_inserted}", file=sys.stderr)
 
 
 if __name__ == "__main__":
