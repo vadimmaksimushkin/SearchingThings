@@ -9,6 +9,7 @@ import logging
 import signal
 import sys
 import asyncpg
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
@@ -158,7 +159,6 @@ async def main(batch_size: int, interval: int | None) -> None:
                 await run_service(places_pool, queue_pool, batch_size, interval)
 
 
-#FIXME: Input sanitization
 #FIXME: Database is down exception
 if __name__ == "__main__":
     import argparse
@@ -167,10 +167,24 @@ if __name__ == "__main__":
         format="%(asctime)s %(levelname)s %(message)s",
         stream=sys.stderr,
     )
+    def _bounded[T: (int, float)](type: type[T], low: T, high: T) -> Callable[[str], T]:
+        """argparse type: parse with type(), then enforce low <= value <= high"""
+        def check(input_string: str) -> T:
+            try:
+                value = type(input_string)
+            except ValueError:
+                raise argparse.ArgumentTypeError(f"expected {type.__name__}, got {input_string!r}")
+            if not (low <= value <= high):
+                raise argparse.ArgumentTypeError(f"must be in [{low}, {high}], got {value}")
+            return value
+        return check
+
     argument_parser = argparse.ArgumentParser()
-    argument_parser.add_argument("--batch-size", default=BATCH_SIZE_DEFAULT, type=int,
+    argument_parser.add_argument("--batch-size", default=BATCH_SIZE_DEFAULT,
+        type=_bounded(int, 1, 1_000_000),
         help=f"Specity the batch size, default {BATCH_SIZE_DEFAULT}")
-    argument_parser.add_argument("--interval", default=None, type=int,
+    argument_parser.add_argument("--interval", default=None,
+        type=_bounded(int, 1, 86_400), # 60*60*24
         help="Poll interval in seconds. If omitted, run once and exit.")
     args = argument_parser.parse_args()
     batch_size = args.batch_size

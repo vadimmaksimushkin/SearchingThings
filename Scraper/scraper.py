@@ -11,6 +11,7 @@ import sys
 import asyncpg
 import logging
 import signal
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
@@ -360,7 +361,6 @@ async def main(
             await run_service(browser, pool, worker_count, poll_interval_s, max_attempts)
 
 
-# FIXME: Input sanitization
 # FIXME: Database is down exception
 # FIXME: Handle 403, denied, facebook login page and other page blockers
 # FIXME: Potentially handle cookie banner
@@ -372,13 +372,25 @@ if __name__ == "__main__":
         format="%(asctime)s %(levelname)s %(message)s",
         stream=sys.stderr,
     )
+    def _bounded[T: (int, float)](type: type[T], low: T, high: T) -> Callable[[str], T]:
+        """argparse type: parse with type(), then enforce low <= value <= high"""
+        def check(input_string: str) -> T:
+            try:
+                value = type(input_string)
+            except ValueError:
+                raise argparse.ArgumentTypeError(f"expected {type.__name__}, got {input_string!r}")
+            if not (low <= value <= high):
+                raise argparse.ArgumentTypeError(f"must be in [{low}, {high}], got {value}")
+            return value
+        return check
+
     argument_parser = argparse.ArgumentParser()
-    argument_parser.add_argument("--workers", default=WORKER_COUNT, type=int,
+    argument_parser.add_argument("--workers", default=WORKER_COUNT, type=_bounded(int, 1, 512),
         help=f"INT     Specity the amount of parallel workers, default {WORKER_COUNT}")
-    argument_parser.add_argument("--max-attempts", default=MAX_ATTEMPTS, type=int,
-        help=f"INT     Specity the amount of parallel workers, default {WORKER_COUNT}")
-    argument_parser.add_argument("--poll-interval", default=POLL_INTERVAL_S, type=float,
-        help=f"FLOAT    Poll interval of each worker in seconds, default {POLL_INTERVAL_S}")
+    argument_parser.add_argument("--max-attempts", default=MAX_ATTEMPTS, type=_bounded(int, 1, 32),
+        help=f"INT     Specity the max attempts per job, default {MAX_ATTEMPTS}")
+    argument_parser.add_argument("--poll-interval", default=POLL_INTERVAL_S, type=_bounded(float, 0.01, 3_600.0),
+        help=f"FLOAT   Poll interval of each worker in seconds, default {POLL_INTERVAL_S}")
     args = argument_parser.parse_args()
     worker_count = args.workers
     max_attempts = args.max_attempts
