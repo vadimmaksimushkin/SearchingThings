@@ -303,5 +303,23 @@ ASSET_EXTS = {
     "mp4", "webm", "mp3", "pdf", "zip",
 }
 
+CONTACT_KEYWORDS = [
+    # Spanish - contact
+    "contacto", "contactos", "contactanos", "contactenos",
+    "contáctanos", "contáctenos",
+    # Spanish - about
+    "nosotros", "quienes-somos", "quienessomos", "quienes_somos",
+    "quiénes-somos", "acerca", "acerca-de", "acercade",
+    "sobre-nosotros", "sobrenosotros",
+    "empresa", "informacion", "información",
+    "directorio", "directorio-de-contacto",
+    "atencion", "atención", "atencion-a-clientes",
+    "ayuda", "conocenos",
+    # English
+    "contact", "contact-us", "contactus",
+    "about", "about-us", "aboutus",
+    "info",
+]
+
 
 PLACES_URL = "https://places.googleapis.com/v1/places:searchText"
