@@ -41,7 +41,6 @@ SELECT last_scanned_at FROM link_extractor_state WHERE id = 1
 UPDATE_EXTRACTOR_TIMESTAMP_SQL = """
 UPDATE link_extractor_state SET last_scanned_at = $1 WHERE id = 1
 """
-
 log = logging.getLogger(__name__)
 
 
@@ -157,6 +156,8 @@ async def main(batch_size: int, interval: int | None) -> None:
                 await run_service(places_pool, queue_pool, batch_size, interval)
 
 
+#FIXME: Input sanitization
+#FIXME: Database is down exception
 if __name__ == "__main__":
     import argparse
     logging.basicConfig(
