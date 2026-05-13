@@ -24,13 +24,16 @@ WHERE website IS NOT NULL AND website <> ''
 ORDER BY fetched_at
 """
 FETCH_KNOWN_SQL = """
-SELECT place_id FROM scrape_queue WHERE place_id = ANY($1)
-UNION SELECT place_id FROM success WHERE place_id = ANY($1)
-UNION SELECT place_id FROM error   WHERE place_id = ANY($1)
+SELECT place_id, website FROM scrape_queue WHERE place_id = ANY($1)
+UNION ALL SELECT place_id, website FROM success WHERE place_id = ANY($1)
+UNION ALL SELECT place_id, website FROM error   WHERE place_id = ANY($1)
 """
 INSERT_SQL = """
 INSERT INTO scrape_queue (place_id, website) VALUES ($1, $2)
-ON CONFLICT (place_id) DO NOTHING
+ON CONFLICT (place_id) DO UPDATE SET
+    website = EXCLUDED.website,
+    added_at = now(),
+    attempts = 0
 """
 READ_EXTRACTOR_TIMESTAMP_SQL = """
 SELECT last_scanned_at FROM link_extractor_state WHERE id = 1
@@ -54,19 +57,19 @@ def normalize_website(url: str) -> str | None:
 
 
 async def insert_new(queue_pool: asyncpg.Pool, batch: list[asyncpg.Record]) -> int:
-    """Push a candidate (place_id, website) in batch to scrape_queue that are not present
-    in queue DB, return inserted count"""
+    """Push a candidate (place_id, website) in batch to scrape_queue when that exact pair
+    is not already known in scrape_queue/success/error. ON CONFLICT on scrape_queue updates
+    the website if the place is pending with a stale URL. Returns inserted/updated count"""
     place_ids = [row["place_id"] for row in batch]
     known_rows = await queue_pool.fetch(FETCH_KNOWN_SQL, place_ids)
-    known = {row["place_id"] for row in known_rows}
+    known: set[tuple[str, str]] = {(row["place_id"], row["website"]) for row in known_rows}
     to_insert: list[tuple[str, str]] = []
 
     for row in batch:
-        if row["place_id"] in known:
-            continue
         website = normalize_website(row["website"])
-        if website:
-            to_insert.append((row["place_id"], website))
+        if not website or ((row["place_id"], website) in known):
+            continue
+        to_insert.append((row["place_id"], website))
 
     if not to_insert:
         return 0
