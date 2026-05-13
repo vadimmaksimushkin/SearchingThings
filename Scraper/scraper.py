@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
 from urllib.parse import urljoin, urlparse, urlunparse
-from playwright.async_api import Browser, Page, TimeoutError as PWTimeout, async_playwright
+from playwright.async_api import Browser, Page, Route, TimeoutError as PWTimeout, async_playwright
 from playwright_stealth import Stealth  # pyright: ignore[reportMissingTypeStubs]
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -40,6 +40,25 @@ CONTACT_RE = re.compile(
     + "|".join(re.escape(k) for k in CONTACT_KEYWORDS)
     + r")(?:$|[/\-_?#&.])"
 )
+
+BLOCKED_RESOURCE_TYPES = {"image", "media", "font"}
+BLOCKED_URL_EXTS = {"pdf", "zip", "exe", "dmg", "tar", "gz"}
+
+
+async def _block_heavy(route: Route) -> None:
+    """Abort image/media/font requests and known binary downloads to keep
+    renderer memory bounded. CSS and JS pass through so layout/JS-rendered
+    text is still available to the scraper."""
+    request = route.request
+    if request.resource_type in BLOCKED_RESOURCE_TYPES:
+        await route.abort()
+        return
+    path = urlparse(request.url).path.lower()
+    ext = path.rsplit(".", 1)[-1] if "." in path.rsplit("/", 1)[-1] else ""
+    if ext in BLOCKED_URL_EXTS:
+        await route.abort()
+        return
+    await route.continue_()
 
 CLAIM_SQL = """
 UPDATE scrape_queue
@@ -150,7 +169,9 @@ def normalize_url(url: str) -> str:
 
 
 async def get_contact_urls(page: Page) -> set[str]:
-    """Scan page for URLs and collect ones with contact keywords in them"""
+    """Scan page for URLs and collect ones with contact keywords in them. 
+    Skips hrefs whose path ends in a known binary/asset extension so we
+    never spend a navigation on a PDF, image, or stylesheet"""
     urls = await page.locator("a[href]").all()
     contact_urls: set[str] = set()
     for url in urls:
@@ -158,6 +179,10 @@ async def get_contact_urls(page: Page) -> set[str]:
         if not href or href.startswith(("javascript:", "mailto:", "tel:", "#")):
             continue
         href = urljoin(page.url, href)
+        path = urlparse(href).path.lower()
+        ext = path.rsplit(".", 1)[-1] if "." in path.rsplit("/", 1)[-1] else ""
+        if ext in ASSET_EXTS:
+            continue
         if CONTACT_RE.search(href):
             contact_urls.add(normalize_url(href))
     return contact_urls
@@ -177,7 +202,6 @@ async def get_emails(page: Page) -> set[str]:
     return {e for e in EMAIL_RE.findall(html_decoded) if not is_asset_or_sentry(e)}
 
 
-# FIXME: Maybe preserve context on a browser and not to create new to each website
 async def scrape_one_site(browser: Browser, website: str) -> ScrapeResult:
     """Crawl one website and its contact/about URLs"""
     context = await browser.new_context(
@@ -186,6 +210,7 @@ async def scrape_one_site(browser: Browser, website: str) -> ScrapeResult:
         timezone_id="America/Mexico_City",
         viewport={"width": 1366, "height": 768},
     )
+    await context.route("**/*", _block_heavy)
     try:
         page = await context.new_page()
         await Stealth().apply_stealth_async(page)
@@ -198,12 +223,20 @@ async def scrape_one_site(browser: Browser, website: str) -> ScrapeResult:
 
         final_website = page.url
         emails = await get_emails(page)
-        contact_urls = await get_contact_urls(page)
+        contact_urls: set[str] = set()
+        try:
+            contact_urls = await get_contact_urls(page)
+        except Exception as e:
+            log.warning(f"  contact URL discovery failed on {website}: {e!r}")
 
-        # FIXME: ???wrap to try/except to preserve scraped results from main page??
         for contact_url in contact_urls:
-            if await _goto(page, contact_url):
-                emails.update(await get_emails(page))
+            try:
+                if await _goto(page, contact_url):
+                    emails.update(await get_emails(page))
+            except Exception as e:
+                log.warning(f"  contact page failed {contact_url}: {e!r}")
+
+
 
         return ScrapeResult(
             success=True,
@@ -362,9 +395,9 @@ async def main(
 
 
 # FIXME: Database is down exception
+# FIXME: Cap the page size download and memory usage or worker
 # FIXME: Handle 403, denied, facebook login page and other page blockers
 # FIXME: Potentially handle cookie banner
-# FIXME: Cap the page size download and memory usage or worker
 if __name__ == "__main__":
     import argparse
     logging.basicConfig(
