@@ -10,6 +10,7 @@ import re
 import sys
 import asyncpg
 import logging
+import signal
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
@@ -266,22 +267,38 @@ async def record_outcome(pool: asyncpg.Pool, job: ClaimedJob, result: ScrapeResu
                 log.critical(f"ELSE STATEMENT REACHED {job} {result}")
 
 
-# BUG: REWORK as main source of bugs
+async def _sleep_or_shutdown(shutdown_event: asyncio.Event, seconds: float) -> bool:
+    """Sleep up to 'seconds' or return early if shutdown is signaled.
+    Returns True when shutdown is signaled, False on timeout."""
+    try:
+        await asyncio.wait_for(shutdown_event.wait(), timeout=seconds)
+        return True
+    except asyncio.TimeoutError:
+        return False
+
+
 async def worker_loop(
     worker_id: int,
     browser: Browser,
     pool: asyncpg.Pool,
-    poll_interval_s: float = POLL_INTERVAL_S) -> None:
-    """MAIN SOURCE OF BUGS"""
-    while True:
+    shutdown_event: asyncio.Event,
+    poll_interval_s: float = POLL_INTERVAL_S,
+    max_attempts: int = MAX_ATTEMPTS) -> None:
+    """Claim, scrape, record. The shutdown check sits only between jobs:
+    once a job is claimed, scrape_one_site and record_outcome always run to
+    completion so the in-flight URL is never abandoned with the queue row
+    still locked."""
+    while not shutdown_event.is_set():
         try:
             job = await claim_and_log_start(pool)
         except Exception as e:
             log.warning(f"w{worker_id} claim failed: {e!r}")
-            await asyncio.sleep(poll_interval_s)
+            if await _sleep_or_shutdown(shutdown_event, poll_interval_s):
+                break
             continue
         if job is None:
-            await asyncio.sleep(poll_interval_s)
+            if await _sleep_or_shutdown(shutdown_event, poll_interval_s):
+                break
             continue
 
         log.info(f"w{worker_id} claim {job.place_id} attempt={job.attempts}")
@@ -298,33 +315,53 @@ async def worker_loop(
 
         if result.success:
             log.info(f"w{worker_id} success {job.place_id} emails={len(result.emails)}")
-        elif job.attempts >= MAX_ATTEMPTS:
+        elif job.attempts >= max_attempts:
             log.info(f"w{worker_id} terminal {job.place_id} reason={result.reason}")
         else:
             log.info(f"w{worker_id} retry {job.place_id} attempt={job.attempts} reason={result.reason}")
+    log.info(f"w{worker_id} exit")
+
+
+async def run_service(
+    browser: Browser,
+    pool: asyncpg.Pool,
+    worker_count: int = WORKER_COUNT,
+    poll_interval_s: float = POLL_INTERVAL_S,
+    max_attempts: int = MAX_ATTEMPTS) -> None:
+    """Run workers until SIGTERM/SIGINT. Signal sets a shutdown event that
+    workers check between jobs; in-flight scrapes complete before exit"""
+    shutdown_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def _on_shutdown() -> None:
+        if not shutdown_event.is_set():
+            log.info("Shutdown signal received, draining workers...")
+        shutdown_event.set()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, _on_shutdown)
+
+    log.info(f"Service started, workers={worker_count}")
+    await asyncio.gather(
+        *(worker_loop(i, browser, pool, shutdown_event, poll_interval_s, max_attempts)
+          for i in range(worker_count))
+    )
+    log.info("Shutdown clean")
 
 
 async def main(
     worker_count: int = WORKER_COUNT,
     max_attempts: int = MAX_ATTEMPTS,
     poll_interval_s: float = POLL_INTERVAL_S) -> None:
-    """Open connection pool and initialize browser"""
+    """Open connection pool, launch browser, run service until signal"""
     async with asyncpg.create_pool(QUEUE_DB_URL, min_size=2, max_size=worker_count + 2) as pool:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
-            try:
-                log.info(f"scraper started: workers={worker_count} " +
-                         f"max_attempts={max_attempts}")
-                await asyncio.gather(
-                    *(worker_loop(i, browser, pool, poll_interval_s) for i in range(worker_count))
-                )
-            finally:
-                await browser.close()
+            await run_service(browser, pool, worker_count, poll_interval_s, max_attempts)
 
 
 # FIXME: Input sanitization
 # FIXME: Database is down exception
-# FIXME: Exit signals handling
 # FIXME: Handle 403, denied, facebook login page and other page blockers
 # FIXME: Potentially handle cookie banner
 # FIXME: Cap the page size download and memory usage or worker
