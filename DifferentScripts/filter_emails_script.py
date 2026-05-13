@@ -14,6 +14,9 @@ import sys
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from constants import ASSET_EXTS
 
 PLACEHOLDER_DOMAINS = {

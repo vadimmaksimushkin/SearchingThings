@@ -1,8 +1,13 @@
 import asyncio
+import sys
+from pathlib import Path
+
 import aiohttp
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from search import paginated_search
-from ShoppingMall import ShoppingMallList, ShoppingMall
+from places import ShoppingMallList, ShoppingMall
 from constants import CDMX_COLONIAS, CDMX_COLONIAS_OPTIMIZED
 
 

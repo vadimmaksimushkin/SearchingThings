@@ -1,10 +1,13 @@
 import asyncio
 import sys
 import aiohttp
+from pathlib import Path
 from typing import Any
 
-from ShoppingMall import ShoppingMallList, ShoppingMall
-from api_key import GOOGLE_MAPS_API_KEY
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from places import ShoppingMallList, ShoppingMall
+from credentials import GOOGLE_MAPS_API_KEY
 from constants import CITIES, STATES, PLACES_URL
 
 PAGE_SIZE = 20
@@ -82,5 +85,5 @@ if __name__ == "__main__":
 
     print(f"Total malls: {len(all_malls)}")
     all_malls.dedupe()
-    all_malls.to_json_file("malls.json")
+    # all_malls.to_json_file("malls.json")
     print(f"Total unique malls: {len(all_malls)}")

@@ -12,11 +12,14 @@ import asyncpg
 import logging
 from dataclasses import dataclass, field
 from datetime import timedelta
+from pathlib import Path
 from urllib.parse import urljoin, urlparse, urlunparse
 from playwright.async_api import Browser, Page, TimeoutError as PWTimeout, async_playwright
 from playwright_stealth import Stealth  # pyright: ignore[reportMissingTypeStubs]
 
-from api_key import QUEUE_DB_URL
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from credentials import QUEUE_DB_URL
 from constants import ASSET_EXTS, CONTACT_KEYWORDS
 
 WORKER_COUNT = 3

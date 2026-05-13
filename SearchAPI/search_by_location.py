@@ -2,12 +2,15 @@ import asyncio
 import math
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import aiohttp
 
-from ShoppingMall import ShoppingMallList
-from api_key import GOOGLE_MAPS_API_KEY
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from places import ShoppingMallList
+from credentials import GOOGLE_MAPS_API_KEY
 from constants import PLACES_URL
 
 PAGE_SIZE = 20

@@ -10,10 +10,12 @@ import signal
 import sys
 import asyncpg
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
-from api_key import PLACES_DB_URL, QUEUE_DB_URL
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from credentials import PLACES_DB_URL, QUEUE_DB_URL
 
 BATCH_SIZE_DEFAULT = 1000
 
