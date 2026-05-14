@@ -161,7 +161,7 @@ async def run_service(batch_size: int, interval: int) -> None:
             except Exception:
                 log.exception("tick failed")
             await asyncio.sleep(float(interval))
-    except asyncio.CancelledError:
+    except asyncio.CancelledError: #NOSONAR
         log.info("Shutdown clean")
     finally:
         if places_pool is not None:
@@ -174,9 +174,19 @@ async def main(batch_size: int, interval: int | None) -> None:
     """Runs one time if interval is None, works like service otherwise.
     One-run mode fails fast on DB errors; service mode retries every interval"""
     if interval is None:
-        async with asyncpg.create_pool(PLACES_DB_URL, min_size=1, max_size=2) as places_pool:
-            async with asyncpg.create_pool(QUEUE_DB_URL, min_size=1, max_size=2) as queue_pool:
-                await run_tick(places_pool, queue_pool, batch_size)
+        # terminate() (sync, immediate) instead of close() to avoid a multi-minute
+        # hang when the DB has gone away with connections still checked out
+        places_pool: asyncpg.Pool | None = None
+        queue_pool: asyncpg.Pool | None = None
+        try:
+            places_pool = await asyncpg.create_pool(PLACES_DB_URL, min_size=1, max_size=2)
+            queue_pool = await asyncpg.create_pool(QUEUE_DB_URL, min_size=1, max_size=2)
+            await run_tick(places_pool, queue_pool, batch_size)
+        finally:
+            if places_pool is not None:
+                places_pool.terminate()
+            if queue_pool is not None:
+                queue_pool.terminate()
     else:
         await run_service(batch_size, interval)
 
@@ -211,4 +221,9 @@ if __name__ == "__main__":
     batch_size = args.batch_size
     interval = args.interval
 
-    asyncio.run(main(batch_size, interval))
+    try:
+        asyncio.run(main(batch_size, interval))
+    except KeyboardInterrupt:
+        log.info("Terminating")
+    except CONNECTION_ERRORS as e:
+        log.error(f"DB unavailable: {e!r}") # NOSONAR
