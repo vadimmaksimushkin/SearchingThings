@@ -20,6 +20,16 @@ from credentials import PLACES_DB_URL, QUEUE_DB_URL
 
 BATCH_SIZE_DEFAULT = 1000
 
+CONNECTION_ERRORS = (
+    asyncpg.PostgresConnectionError,
+    asyncpg.InterfaceError,
+    asyncpg.CannotConnectNowError,
+    asyncpg.InternalClientError,
+    ConnectionError,
+    OSError,
+    asyncio.TimeoutError,
+)
+
 FETCH_CANDIDATES_SQL = """
 SELECT place_id, website, fetched_at FROM places
 WHERE website IS NOT NULL AND website <> ''
@@ -123,12 +133,10 @@ async def run_tick(
     log.info(f"Summary: scanned={total_scanned} inserted={total_inserted}")
 
 
-async def run_service(
-    places_pool: asyncpg.Pool,
-    queue_pool: asyncpg.Pool,
-    batch_size: int,
-    interval: int) -> None:
-    """Loop run_tick every 'interval' seconds until SIGTERM/SIGINT"""
+async def run_service(batch_size: int, interval: int) -> None:
+    """Loop run_tick every 'interval' seconds until SIGTERM/SIGINT.
+    Pools are created lazily inside the loop so a DB that is down at startup
+    or drops mid-run gets the same retry-every-'interval' treatment"""
     main_task = asyncio.current_task()
     if not main_task:
         log.critical("main_task is None")
@@ -138,28 +146,41 @@ async def run_service(
         loop.add_signal_handler(sig, main_task.cancel)
 
     log.info(f"Service started, interval={interval}s")
-    while True:
-        try:
-            await run_tick(places_pool, queue_pool, batch_size)
+    places_pool: asyncpg.Pool | None = None
+    queue_pool: asyncpg.Pool | None = None
+    try:
+        while True:
+            try:
+                if places_pool is None:
+                    places_pool = await asyncpg.create_pool(PLACES_DB_URL, min_size=1, max_size=2)
+                if queue_pool is None:
+                    queue_pool = await asyncpg.create_pool(QUEUE_DB_URL, min_size=1, max_size=2)
+                await run_tick(places_pool, queue_pool, batch_size)
+            except CONNECTION_ERRORS as e:
+                log.warning(f"DB unavailable: {e!r}; retrying in {interval}s")
+            except Exception:
+                log.exception("tick failed")
             await asyncio.sleep(float(interval))
-        except Exception as e:
-            log.exception("tick failed ", e)
-        except asyncio.CancelledError:
-            break
-    log.info("Shutdown clean")
+    except asyncio.CancelledError:
+        log.info("Shutdown clean")
+    finally:
+        if places_pool is not None:
+            await places_pool.close()
+        if queue_pool is not None:
+            await queue_pool.close()
 
 
 async def main(batch_size: int, interval: int | None) -> None:
-    """Runs one time if interval is None, works like service otherwise"""
-    async with asyncpg.create_pool(PLACES_DB_URL, min_size=1, max_size=2) as places_pool:
-        async with asyncpg.create_pool(QUEUE_DB_URL, min_size=1, max_size=2) as queue_pool:
-            if interval is None:
+    """Runs one time if interval is None, works like service otherwise.
+    One-run mode fails fast on DB errors; service mode retries every interval"""
+    if interval is None:
+        async with asyncpg.create_pool(PLACES_DB_URL, min_size=1, max_size=2) as places_pool:
+            async with asyncpg.create_pool(QUEUE_DB_URL, min_size=1, max_size=2) as queue_pool:
                 await run_tick(places_pool, queue_pool, batch_size)
-            else:
-                await run_service(places_pool, queue_pool, batch_size, interval)
+    else:
+        await run_service(batch_size, interval)
 
 
-#FIXME: Database is down exception
 if __name__ == "__main__":
     import argparse
     logging.basicConfig(
