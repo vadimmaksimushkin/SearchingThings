@@ -1,0 +1,39 @@
+services:
+  pg_places:
+    image: docker.io/library/postgres:18-alpine
+    container_name: pg_places
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: places
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_places_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d places"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  link_extractor:
+    build:
+      context: ../..
+      dockerfile: Scraper/link_extractor.Containerfile
+    image: link_extractor:local
+    container_name: link_extractor
+    restart: unless-stopped
+    environment:
+      GOOGLE_MAPS_API_KEY: ""
+      PLACES_DB_URL: postgresql://postgres:${POSTGRES_PASSWORD}@pg_places:5432/places
+      QUEUE_DB_URL: ${QUEUE_DB_URL}
+    depends_on:
+      pg_places:
+        condition: service_healthy
+    command:
+      - "--batch-size=1000"
+      - "--interval=30"
+
+volumes:
+  pg_places_data:

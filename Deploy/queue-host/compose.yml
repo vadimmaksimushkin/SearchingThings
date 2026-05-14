@@ -1,0 +1,43 @@
+services:
+  pg_queue:
+    image: docker.io/library/postgres:18-alpine
+    container_name: pg_queue
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: queue
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_queue_data:/var/lib/postgresql
+      - ../../DBSchemas/scraper_db_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro,Z
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d queue"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  scraper:
+    build:
+      context: ../..
+      dockerfile: Scraper/scraper.Containerfile
+    image: scraper:local
+    container_name: scraper
+    restart: unless-stopped
+    mem_limit: 1500m
+    memswap_limit: 1500m
+    environment:
+      GOOGLE_MAPS_API_KEY: ""
+      PLACES_DB_URL: ${PLACES_DB_URL}
+      QUEUE_DB_URL: postgresql://postgres:${POSTGRES_PASSWORD}@pg_queue:5432/queue
+    depends_on:
+      pg_queue:
+        condition: service_healthy
+    command:
+      - "--workers=3"
+      - "--max-attempts=3"
+      - "--poll-interval=1.0"
+
+volumes:
+  pg_queue_data:

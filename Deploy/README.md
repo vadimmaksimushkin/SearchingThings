@@ -1,0 +1,1 @@
+install.sh works on Amazon Linux 2023, ARM

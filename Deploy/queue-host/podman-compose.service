@@ -1,0 +1,15 @@
+[Unit]
+Description=queue-host podman-compose stack (pg_queue + scraper)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/home/ec2-user/ScrapingShoppingMalls/Deploy/queue-host
+ExecStart=/usr/local/bin/podman-compose up -d
+ExecStop=/usr/local/bin/podman-compose down
+TimeoutStartSec=600
+
+[Install]
+WantedBy=default.target
