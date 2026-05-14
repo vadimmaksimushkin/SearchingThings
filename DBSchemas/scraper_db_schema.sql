@@ -40,7 +40,8 @@ CREATE TABLE attempt_log (
 CREATE INDEX idx_attempt_log_place_id ON attempt_log(place_id);
 
 CREATE TABLE link_extractor_state (
-    id              SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-    last_scanned_at TIMESTAMPTZ NOT NULL DEFAULT 'epoch'
+    id                    SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    last_scanned_at       TIMESTAMPTZ NOT NULL DEFAULT 'epoch',
+    last_emails_synced_at TIMESTAMPTZ NOT NULL DEFAULT 'epoch'
 );
 INSERT INTO link_extractor_state (id) VALUES (1) ON CONFLICT DO NOTHING;

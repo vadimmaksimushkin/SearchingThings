@@ -1,8 +1,7 @@
 """
-Link extractor that streams places in batches from the main DB with
-fetched_at > last_scanned_at and pushes them to scrape_queue if not already
-present in scrape_queue, success, or error. last_scanned_at keeps each run
-bounded to places added since the previous successful run.
+Extractor that reads main db (places) and scraper db (queue). It pushes new places to
+queue.scrape_queue and pulls scraped emails from queue.success and adds new scanned
+emails to places.emails
 """
 import asyncio
 import logging
@@ -54,6 +53,24 @@ SELECT last_scanned_at FROM link_extractor_state WHERE id = 1
 UPDATE_EXTRACTOR_TIMESTAMP_SQL = """
 UPDATE link_extractor_state SET last_scanned_at = $1 WHERE id = 1
 """
+READ_EMAILS_TIMESTAMP_SQL = """
+SELECT last_emails_synced_at FROM link_extractor_state WHERE id = 1
+"""
+UPDATE_EMAILS_TIMESTAMP_SQL = """
+UPDATE link_extractor_state SET last_emails_synced_at = $1 WHERE id = 1
+"""
+FETCH_SUCCESS_EMAILS_SQL = """
+SELECT place_id, emails, scraped_at FROM success
+WHERE emails IS NOT NULL AND scraped_at > $1
+ORDER BY scraped_at
+"""
+MERGE_EMAILS_SQL = """
+UPDATE places
+SET emails = ARRAY(
+    SELECT DISTINCT unnest(COALESCE(emails, ARRAY[]::text[]) || $2::text[])
+)
+WHERE place_id = $1
+"""
 log = logging.getLogger(__name__)
 
 
@@ -92,11 +109,24 @@ async def insert_new(queue_pool: asyncpg.Pool, batch: list[asyncpg.Record]) -> i
     return len(to_insert)
 
 
+async def merge_emails(places_pool: asyncpg.Pool, batch: list[asyncpg.Record]) -> int:
+    """Update places.places.emails from queue.success.emails"""
+    rows = [(r["place_id"], r["emails"]) for r in batch]
+    if not rows:
+        return 0
+    async with places_pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.executemany(MERGE_EMAILS_SQL, rows)
+    return len(rows)
+
+
 async def run_tick(
     places_pool: asyncpg.Pool,
     queue_pool: asyncpg.Pool,
     batch_size: int) -> None:
-    """One full extraction pass: read last_scanned_at, scan candidates, bump last_scanned_at"""
+    """One full tick: push places to scrape_quue, then pull emails from success.
+    Each pass uses its own timestamp and bumps it after a successful pass"""
+    # Push new places to scrape_queue
     last_scanned_at: datetime = await queue_pool.fetchval(READ_EXTRACTOR_TIMESTAMP_SQL)
     log.info(f"last_scanned_at={last_scanned_at}")
 
@@ -131,6 +161,40 @@ async def run_tick(
         log.info("No new candidates")
 
     log.info(f"Summary: scanned={total_scanned} inserted={total_inserted}")
+
+    # Pull new emails from success.emails to places.emails
+    last_emails_synced_at: datetime = await queue_pool.fetchval(READ_EMAILS_TIMESTAMP_SQL)
+    log.info(f"last_emails_synced_at={last_emails_synced_at}")
+
+    last_scraped_at: datetime | None = None
+    total_emails_scanned = 0
+    total_emails_merged = 0
+
+    async with queue_pool.acquire() as conn:
+        async with conn.transaction():
+            cursor = conn.cursor(FETCH_SUCCESS_EMAILS_SQL, last_emails_synced_at, prefetch=batch_size)
+            buffer: list[asyncpg.Record] = []
+            async for row in cursor:
+                buffer.append(row)
+                if len(buffer) >= batch_size:
+                    total_emails_merged += await merge_emails(places_pool, buffer)
+                    total_emails_scanned += len(buffer)
+                    last_scraped_at = buffer[-1]["scraped_at"]
+                    log.info(f"  emails scanned={total_emails_scanned} merged={total_emails_merged}")
+                    buffer.clear()
+            if buffer:
+                total_emails_merged += await merge_emails(places_pool, buffer)
+                total_emails_scanned += len(buffer)
+                last_scraped_at = buffer[-1]["scraped_at"]
+                log.info(f"  emails scanned={total_emails_scanned} merged={total_emails_merged}")
+
+    if last_scraped_at is not None:
+        await queue_pool.execute(UPDATE_EMAILS_TIMESTAMP_SQL, last_scraped_at)
+        log.info(f"Emails timestamp bumped to {last_scraped_at}")
+    else:
+        log.info("No new emails")
+
+    log.info(f"Emails summary: scanned={total_emails_scanned} merged={total_emails_merged}")
 
 
 async def run_service(batch_size: int, interval: int) -> None:
