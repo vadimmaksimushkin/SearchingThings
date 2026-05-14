@@ -35,6 +35,16 @@ USER_AGENT = (
 )
 EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
 
+CONNECTION_ERRORS = (
+    asyncpg.PostgresConnectionError,
+    asyncpg.InterfaceError,
+    asyncpg.CannotConnectNowError,
+    asyncpg.InternalClientError,
+    ConnectionError,
+    OSError,
+    asyncio.TimeoutError,
+)
+
 CONTACT_RE = re.compile(
     r"(?i)(?:^|[/\-_?#=])("
     + "|".join(re.escape(k) for k in CONTACT_KEYWORDS)
@@ -169,7 +179,7 @@ def normalize_url(url: str) -> str:
 
 
 async def get_contact_urls(page: Page) -> set[str]:
-    """Scan page for URLs and collect ones with contact keywords in them. 
+    """Scan page for URLs and collect ones with contact keywords in them.
     Skips hrefs whose path ends in a known binary/asset extension so we
     never spend a navigation on a PDF, image, or stylesheet"""
     urls = await page.locator("a[href]").all()
@@ -325,8 +335,13 @@ async def worker_loop(
     while not shutdown_event.is_set():
         try:
             job = await claim_and_log_start(pool)
-        except Exception as e:
-            log.warning(f"w{worker_id} claim failed: {e!r}")
+        except CONNECTION_ERRORS as e:
+            log.warning(f"w{worker_id} DB unavailable: {e!r}; retrying in {poll_interval_s}s")
+            if await _sleep_or_shutdown(shutdown_event, poll_interval_s):
+                break
+            continue
+        except Exception:
+            log.exception(f"w{worker_id} claim failed")
             if await _sleep_or_shutdown(shutdown_event, poll_interval_s):
                 break
             continue
@@ -343,8 +358,11 @@ async def worker_loop(
 
         try:
             await record_outcome(pool, job, result)
-        except Exception as e:
-            log.warning(f"w{worker_id} record_outcome failed for {job.place_id}: {e!r}")
+        except CONNECTION_ERRORS as e:
+            log.warning(f"w{worker_id} DB unavailable recording {job.place_id}: {e!r}")
+            continue
+        except Exception:
+            log.exception(f"w{worker_id} record_outcome failed for {job.place_id}")
             continue
 
         if result.success:
@@ -356,14 +374,31 @@ async def worker_loop(
     log.info(f"w{worker_id} exit")
 
 
+async def _open_pool_with_retry(
+    worker_count: int,
+    poll_interval_s: float,
+    shutdown_event: asyncio.Event) -> asyncpg.Pool | None:
+    """Create the queue pool, retrying every poll_interval_s if DB is unreachable.
+    Returns None if shutdown was signaled before a pool could be opened."""
+    while not shutdown_event.is_set():
+        try:
+            return await asyncpg.create_pool(
+                QUEUE_DB_URL, min_size=2, max_size=worker_count + 2)
+        except CONNECTION_ERRORS as e:
+            log.warning(f"DB unavailable: {e!r}; retrying in {poll_interval_s}s")
+            if await _sleep_or_shutdown(shutdown_event, poll_interval_s):
+                return None
+    return None
+
+
 async def run_service(
     browser: Browser,
-    pool: asyncpg.Pool,
     worker_count: int = WORKER_COUNT,
     poll_interval_s: float = POLL_INTERVAL_S,
     max_attempts: int = MAX_ATTEMPTS) -> None:
     """Run workers until SIGTERM/SIGINT. Signal sets a shutdown event that
-    workers check between jobs; in-flight scrapes complete before exit"""
+    workers check between jobs; in-flight scrapes complete before exit.
+    Pool is created lazily so DB-down-at-startup gets the same retry treatment."""
     shutdown_event = asyncio.Event()
     loop = asyncio.get_running_loop()
 
@@ -376,10 +411,17 @@ async def run_service(
         loop.add_signal_handler(sig, _on_shutdown)
 
     log.info(f"Service started, workers={worker_count}")
-    await asyncio.gather(
-        *(worker_loop(i, browser, pool, shutdown_event, poll_interval_s, max_attempts)
-          for i in range(worker_count))
-    )
+    pool = await _open_pool_with_retry(worker_count, poll_interval_s, shutdown_event)
+    if pool is None:
+        log.info("Shutdown clean")
+        return
+    try:
+        await asyncio.gather(
+            *(worker_loop(i, browser, pool, shutdown_event, poll_interval_s, max_attempts)
+              for i in range(worker_count))
+        )
+    finally:
+        await pool.close()
     log.info("Shutdown clean")
 
 
@@ -387,14 +429,12 @@ async def main(
     worker_count: int = WORKER_COUNT,
     max_attempts: int = MAX_ATTEMPTS,
     poll_interval_s: float = POLL_INTERVAL_S) -> None:
-    """Open connection pool, launch browser, run service until signal"""
-    async with asyncpg.create_pool(QUEUE_DB_URL, min_size=2, max_size=worker_count + 2) as pool:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            await run_service(browser, pool, worker_count, poll_interval_s, max_attempts)
+    """Launch browser, run service until signal"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        await run_service(browser, worker_count, poll_interval_s, max_attempts)
 
 
-# FIXME: Database is down exception
 # FIXME: Cap the page size download and memory usage or worker
 # FIXME: Handle 403, denied, facebook login page and other page blockers
 # FIXME: Potentially handle cookie banner
@@ -429,4 +469,7 @@ if __name__ == "__main__":
     max_attempts = args.max_attempts
     poll_interval_s = args.poll_interval
 
-    asyncio.run(main(worker_count, max_attempts, poll_interval_s))
+    try:
+        asyncio.run(main(worker_count, max_attempts, poll_interval_s))
+    except KeyboardInterrupt:
+        log.info("Terminating")
