@@ -2,71 +2,57 @@
 
 const API_PORT = 8000;
 const API_BASE = `http://localhost:${API_PORT}`;
-// const USE_MOCK = true;
 const MOCK_RESPONSE = [
-    {
-      place_id: "ChIJd51Z9PUB0oURE7x89-mYKpw",
-      main_type: "gym",
-      name: "Fitspin Lomas",
-      address:
-        "Volcán 150, Lomas - Virreyes, Lomas de Chapultepec, Miguel Hidalgo, 11000 Ciudad de México, CDMX, Mexico",
-      phone: null,
-      website: "https://www.fitspin.mx/",
-      rating: 4.6,
-      rating_count: 34,
-      latitude: 19.429278399999998,
-      longitude: -99.2076096,
-      plus_code: "76F2CQHR+PX",
-      category:
-        ["fitness_center","gym","health","sports_activity_location","point_of_interest","establishment"],
-      emails: null,
-    },
-    {
-      place_id: "ChIJLSnWhmj_0YURXYYaZBTa4ZY",
-      main_type: "gym",
-      name: "Serena Studio del Valle",
-      address: "San Francisco 323, entre Luz Saviñon y Pedro Romero de Terreros, Col del Valle Nte, Benito Juárez, 03103 Ciudad de México, CDMX, Mexico",
-      phone: "+52 55 1225 3146",
-      website: "http://my.fitune.io/serena-studio/info",
-      rating: 5,
-      rating_count: 9,
-      latitude: 19.394672099999998,
-      longitude: -99.17053630000001,
-      plus_code: "76F29RVH+VQ",
-      category: ["gym","sports_school","sports_complex","sports_activity_location","health","point_of_interest","establishment"],
-      emails: null,
-    },
-    {
-      place_id: "ChIJMwharpP_0YURUFjUgab7I-s",
-      main_type: "gym",
-      name: "60 Mind Fitness",
-      address: "Casa del Obrero Mundial 410-Piso 6, Narvarte Poniente, Benito Juárez, 03000 Ciudad de México, CDMX, Mexico",
-      phone: "+52 56 2541 7143",
-      website: null,
-      rating: 4.9,
-      rating_count: 40,
-      latitude: 19.4019668,
-      longitude: -99.1559159,
-      plus_code: "76F2CR2V+QJ",
-      category: ["gym","sports_activity_location","health","point_of_interest","establishment"],
-      emails: null,
-    },
-    {
-      place_id: "ChIJ08jJnHr_0YURU9-Rg6F5qgg",
-      main_type: "gym",
-      name: "Casa Hera",
-      address: "Anaxágoras 915, Narvarte Poniente, Benito Juárez, 03100 Ciudad de México, CDMX, Mexico",
-      phone: null,
-      website: "https://pilateshera.com/",
-      rating: 4.1,
-      rating_count: 28,
-      latitude: 19.384880799999998,
-      longitude: -99.15865319999999,
-      plus_code: "76F29RMR+XG",
-      category: ["yoga_studio","fitness_center","gym","sports_complex","sports_school","sports_activity_location","health","point_of_interest","establishment"],
-      emails: "",
-    },
-  ];
+  {
+    place_id: "ChIJEe9KcCP_0YURyJvp7XuCwSo",
+    main_type: "gym",
+    name: "TRX Nápoles",
+    address:
+      "Parque Alfonso Esparza, C. Pensilvania, Nápoles, Benito Juárez, 03840 Ciudad de México, CDMX, Mexico         --Mo",
+    phone: "+52 55 4572 3411",
+    website: null,
+    rating: 5,
+    rating_count: 44,
+    latitude: 19.3896473,
+    longitude: -99.177818,
+    plus_code: "76F29RQC+VV",
+    category: [
+      "gym",
+      "sports_activity_location",
+      "health",
+      "point_of_interest",
+      "establishment",
+    ],
+    emails: null,
+  },
+  {
+    place_id: "ChIJCYm2BGkB0oUR_DPjq6sDRDY",
+    main_type: "gym",
+    name: "Reform Studio",
+    address:
+      "Monte Athos 149, Lomas - Virreyes, Lomas de Chapultepec, Miguel Hidalgo, 11000 Ciudad de México, CDMX, Mexico",
+    phone: "+52 55 2507 8493",
+    website:
+      "https://www.instagram.com/reformstudio_pilates?igsh=amUyNmdjczNrOGE2",
+    rating: 4.5,
+    rating_count: 16,
+    latitude: 19.420948199999998,
+    longitude: -99.2102039,
+    plus_code: "76F2CQCQ+9W",
+    category: [
+      "yoga_studio",
+      "fitness_center",
+      "gym",
+      "sports_complex",
+      "sports_school",
+      "health",
+      "sports_activity_location",
+      "point_of_interest",
+      "establishment",
+    ],
+    emails: null,
+  },
+];
 
 
 async function init() {
