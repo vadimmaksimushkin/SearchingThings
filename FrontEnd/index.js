@@ -2,7 +2,7 @@
 
 const API_PORT = 8000;
 const API_BASE = `http://localhost:${API_PORT}`;
-const USE_MOCK = true;
+// const USE_MOCK = true;
 const MOCK_RESPONSE = [
     {
       place_id: "ChIJd51Z9PUB0oURE7x89-mYKpw",
@@ -88,6 +88,7 @@ async function init() {
   const lonInput = document.getElementById("lon-input");
   const typeInput = document.getElementById("type-input");
   const localOnlyInput = document.getElementById("local-only");
+  const useMockInput = document.getElementById("use-mock");
   const searchBtn = document.getElementById("search-btn");
   const clearBtn = document.getElementById("clear-btn");
   const debug = document.getElementById("debug");
@@ -118,8 +119,9 @@ async function init() {
   searchBtn.addEventListener("click", async () => {
     const lat = Number(latInput.value);
     const lon = Number(lonInput.value);
-    const mainType = typeInput.value.trim();
-    const localOnly = localOnlyInput.checked;
+    const main_type = typeInput.value.trim();
+    const local_only = localOnlyInput.checked;
+    const use_mock = useMockInput.checked;
 
     userMarker.position = {lat, lng: lon};
 
@@ -129,10 +131,10 @@ async function init() {
     }
     resultMarkers = [];
 
-    debug.textContent = `Mock results: ${USE_MOCK}\n`
-    debug.textContent += `Input mainType=${mainType}, lat=${lat}, lon=${lon}, localOnly=${localOnly}\n`
+    debug.textContent = `Mock results: ${use_mock}\n`
+    debug.textContent += `Input mainType=${main_type}, lat=${lat}, lon=${lon}, localOnly=${local_only}\n`
     try {
-      const results = await searchByLocation(mainType, lat, lon, localOnly);
+      const results = await searchByLocation(main_type, lat, lon, local_only, -1234, use_mock);
       debug.textContent += JSON.stringify(results, null, 2);
 
       for (const place of results) {
@@ -160,11 +162,22 @@ async function init() {
   });
 }
 
-async function searchByLocation(mainType, lat, lon, localOnly, maxResults) {
-  if (USE_MOCK) {
-      return mockSearch(lat, lon, mainType);
+async function searchByLocation(main_type, lat, lon, local_only, max_results, use_mock) {
+  if (use_mock) {
+      return mockSearch(lat, lon, main_type);
   }
-  // send request to http server, GET searh_by_location
+  const params = new URLSearchParams({
+    main_type,
+    lat: String(lat),
+    lon: String(lon),
+    local_only: String(local_only),
+    max_results: String(max_results),
+  });
+  const response = await fetch(`${API_BASE}/searchByLocation?${params}`);
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+  }
+  return response.json();
 }
 
 function mockSearch(lat, lon, mainType) {
