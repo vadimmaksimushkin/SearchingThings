@@ -72,6 +72,9 @@ async function init() {
 
   const latInput = document.getElementById("lat-input");
   const lonInput = document.getElementById("lon-input");
+  const radiusInput = document.getElementById("radius-input");
+  const isRectangle = document.getElementById("location-is-rectangle-input");
+  const maxResultsInput = document.getElementById("max-results-input");
   const typeInput = document.getElementById("type-input");
   const localOnlyInput = document.getElementById("local-only");
   const useMockInput = document.getElementById("use-mock");
@@ -105,6 +108,9 @@ async function init() {
   searchBtn.addEventListener("click", async () => {
     const lat = Number(latInput.value);
     const lon = Number(lonInput.value);
+    const radius = Number(radiusInput.value);
+    const is_rectangle = isRectangle.checked;
+    const max_results = Number(maxResultsInput.value);
     const main_type = typeInput.value.trim();
     const local_only = localOnlyInput.checked;
     const use_mock = useMockInput.checked;
@@ -118,9 +124,13 @@ async function init() {
     resultMarkers = [];
 
     debug.textContent = `Mock results: ${use_mock}\n`
-    debug.textContent += `Input mainType=${main_type}, lat=${lat}, lon=${lon}, localOnly=${local_only}\n`
+    debug.textContent +=
+        `Input mainType=${main_type}, lat=${lat}, lon=${lon}, radius=${
+            radius}, is_rectangle=${is_rectangle}, max-restuls=${
+            max_results}, localOnly=${local_only}\n`
     try {
-      const results = await searchByLocation(main_type, lat, lon, local_only, -1234, use_mock);
+      const results = await searchByLocation(main_type, lat, lon, radius, is_rectangle, local_only, max_results, use_mock);
+      debug.textContent += `results count: ${results?.length}\n`;
       debug.textContent += JSON.stringify(results, null, 2);
 
       for (const place of results) {
@@ -148,7 +158,7 @@ async function init() {
   });
 }
 
-async function searchByLocation(main_type, lat, lon, local_only, max_results, use_mock) {
+async function searchByLocation(main_type, lat, lon, radius, is_rectangle, local_only, max_results, use_mock) {
   if (use_mock) {
       return mockSearch(lat, lon, main_type);
   }
@@ -156,6 +166,8 @@ async function searchByLocation(main_type, lat, lon, local_only, max_results, us
     main_type,
     lat: String(lat),
     lon: String(lon),
+    radius: String(radius),
+    is_rectangle: String(is_rectangle),
     local_only: String(local_only),
     max_results: String(max_results),
   });
