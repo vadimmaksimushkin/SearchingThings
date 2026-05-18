@@ -88,9 +88,7 @@ async function init() {
           gmpClickable: true,
         });
         marker.addListener("gmp-click", () => {
-          const pre = document.createElement("pre");
-          pre.textContent = JSON.stringify(place, null, 2);
-          infoWindow.setContent(pre);
+          infoWindow.setContent(buildPlaceCard(place));
           infoWindow.open({ map: innerMap, anchor: marker });
         });
         resultMarkers.push(marker);
@@ -128,6 +126,72 @@ async function searchByLocation(main_type, lat, lon, radius, is_rectangle, local
     throw new Error(`HTTP ${response.status}: ${await response.text()}`);
   }
   return response.json();
+}
+
+function buildPlaceCard(place) {
+  const card = document.createElement("div");
+
+  appendBoldRow(card, place.name);
+  appendTextRow(card, place.place_id);
+  appendTextRow(card, place.main_type);
+  if (place.rating != null) {
+    appendTextRow(card, `Rating ★ ${place.rating.toFixed(1)} (${place.rating_count} reviews)`);
+  }
+  appendTextRow(card, place.address);
+  if (place.phone) {
+    appendLinkRow(card, `tel:${place.phone}`, place.phone);
+  }
+  if (place.website) {
+    appendLinkRow(card, place.website, place.website, "_blank");
+  }
+  if (place.emails && place.emails.length > 0) {
+    const row = document.createElement("div");
+    place.emails.forEach((email, i) => {
+      if (i > 0) row.appendChild(document.createTextNode(", "));
+      const a = document.createElement("a");
+      a.href = `mailto:${email}`;
+      a.textContent = email;
+      row.appendChild(a);
+    });
+    card.appendChild(row);
+  }
+  if (place.latitude != null && place.longitude != null) {
+    appendTextRow(card, `${place.latitude}, ${place.longitude}`);
+  }
+  appendTextRow(card, place.plus_code);
+  if (place.category && place.category.length > 0) {
+    appendTextRow(card, place.category.join(", "));
+  }
+  return card;
+}
+
+function appendTextRow(parent, text) {
+  if (text == null) return;
+  const row = document.createElement("div");
+  row.textContent = text;
+  parent.appendChild(row);
+}
+
+function appendBoldRow(parent, text) {
+  if (text == null) return;
+  const row = document.createElement("div");
+  const strong = document.createElement("strong");
+  strong.textContent = text;
+  row.appendChild(strong);
+  parent.appendChild(row);
+}
+
+function appendLinkRow(parent, href, text, target) {
+  const row = document.createElement("div");
+  const a = document.createElement("a");
+  a.href = href;
+  a.textContent = text;
+  if (target) {
+    a.target = target;
+    a.rel = "noopener noreferrer";
+  }
+  row.appendChild(a);
+  parent.appendChild(row);
 }
 
 await init();
