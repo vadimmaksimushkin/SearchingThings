@@ -2,61 +2,10 @@
 
 const API_PORT = 8000;
 const API_BASE = `http://localhost:${API_PORT}`;
-const MOCK_RESPONSE = [
-  {
-    place_id: "ChIJEe9KcCP_0YURyJvp7XuCwSo",
-    main_type: "gym",
-    name: "TRX Nápoles",
-    address:
-      "Parque Alfonso Esparza, C. Pensilvania, Nápoles, Benito Juárez, 03840 Ciudad de México, CDMX, Mexico         --Mo",
-    phone: "+52 55 4572 3411",
-    website: null,
-    rating: 5,
-    rating_count: 44,
-    latitude: 19.3896473,
-    longitude: -99.177818,
-    plus_code: "76F29RQC+VV",
-    category: [
-      "gym",
-      "sports_activity_location",
-      "health",
-      "point_of_interest",
-      "establishment",
-    ],
-    emails: null,
-  },
-  {
-    place_id: "ChIJCYm2BGkB0oUR_DPjq6sDRDY",
-    main_type: "gym",
-    name: "Reform Studio",
-    address:
-      "Monte Athos 149, Lomas - Virreyes, Lomas de Chapultepec, Miguel Hidalgo, 11000 Ciudad de México, CDMX, Mexico",
-    phone: "+52 55 2507 8493",
-    website:
-      "https://www.instagram.com/reformstudio_pilates?igsh=amUyNmdjczNrOGE2",
-    rating: 4.5,
-    rating_count: 16,
-    latitude: 19.420948199999998,
-    longitude: -99.2102039,
-    plus_code: "76F2CQCQ+9W",
-    category: [
-      "yoga_studio",
-      "fitness_center",
-      "gym",
-      "sports_complex",
-      "sports_school",
-      "health",
-      "sports_activity_location",
-      "point_of_interest",
-      "establishment",
-    ],
-    emails: null,
-  },
-];
 
 
 async function init() {
-  const [{ AdvancedMarkerElement, PinElement }] = await Promise.all([
+  const [{ AdvancedMarkerElement, PinElement }, { InfoWindow }] = await Promise.all([
     google.maps.importLibrary("marker"),
     google.maps.importLibrary("maps"),
   ]);
@@ -69,6 +18,7 @@ async function init() {
   mapElement.setAttribute("zoom", default_zoom)
   const innerMap = mapElement.innerMap;
   innerMap.setOptions({ mapTypeControl: false });
+  const infoWindow = new InfoWindow();
 
   const latInput = document.getElementById("lat-input");
   const lonInput = document.getElementById("lon-input");
@@ -77,7 +27,6 @@ async function init() {
   const maxResultsInput = document.getElementById("max-results-input");
   const typeInput = document.getElementById("type-input");
   const localOnlyInput = document.getElementById("local-only");
-  const useMockInput = document.getElementById("use-mock");
   const searchBtn = document.getElementById("search-btn");
   const clearBtn = document.getElementById("clear-btn");
   const debug = document.getElementById("debug");
@@ -113,7 +62,6 @@ async function init() {
     const max_results = Number(maxResultsInput.value);
     const main_type = typeInput.value.trim();
     const local_only = localOnlyInput.checked;
-    const use_mock = useMockInput.checked;
 
     userMarker.position = {lat, lng: lon};
 
@@ -123,13 +71,12 @@ async function init() {
     }
     resultMarkers = [];
 
-    debug.textContent = `Mock results: ${use_mock}\n`
     debug.textContent +=
         `Input mainType=${main_type}, lat=${lat}, lon=${lon}, radius=${
             radius}, is_rectangle=${is_rectangle}, max-restuls=${
             max_results}, localOnly=${local_only}\n`
     try {
-      const results = await searchByLocation(main_type, lat, lon, radius, is_rectangle, local_only, max_results, use_mock);
+      const results = await searchByLocation(main_type, lat, lon, radius, is_rectangle, local_only, max_results);
       debug.textContent += `results count: ${results?.length}\n`;
       debug.textContent += JSON.stringify(results, null, 2);
 
@@ -138,6 +85,13 @@ async function init() {
           map: innerMap,
           position: {lat: place.latitude, lng: place.longitude},
           title: place.name,
+          gmpClickable: true,
+        });
+        marker.addListener("gmp-click", () => {
+          const pre = document.createElement("pre");
+          pre.textContent = JSON.stringify(place, null, 2);
+          infoWindow.setContent(pre);
+          infoWindow.open({ map: innerMap, anchor: marker });
         });
         resultMarkers.push(marker);
       }
@@ -153,15 +107,13 @@ async function init() {
         m.map = null;
     }
     resultMarkers = [];
+    infoWindow.close();
     userMarker.position = {lat: cdmx_center_lat, lng: cdmx_center_lon};
     debug.textContent = "";
   });
 }
 
-async function searchByLocation(main_type, lat, lon, radius, is_rectangle, local_only, max_results, use_mock) {
-  if (use_mock) {
-      return mockSearch(lat, lon, main_type);
-  }
+async function searchByLocation(main_type, lat, lon, radius, is_rectangle, local_only, max_results) {
   const params = new URLSearchParams({
     main_type,
     lat: String(lat),
@@ -178,8 +130,4 @@ async function searchByLocation(main_type, lat, lon, radius, is_rectangle, local
   return response.json();
 }
 
-function mockSearch(lat, lon, mainType) {
-    return MOCK_RESPONSE;
-}
-
-void init();
+await init();
