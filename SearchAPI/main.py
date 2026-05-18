@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from SearchAPI.search_local_db import create_pool, find_places_in_square
+from SearchAPI.search_local_db import create_pool, find_places_circle, find_places_rectangle
 from SearchAPI.search_by_location import Location
 
 
@@ -62,10 +62,10 @@ async def search_by_location(
         f"localOnly={local_only}, maxResults={max_results}"
     )
     location = Location.from_center_point((lat, lon), radius, is_rectangle=is_rectangle)
-    results = await find_places_in_square(
+    search = find_places_rectangle if is_rectangle else find_places_circle
+    return await search(
         request.app.state.pool,
         location,
         main_type=main_type,
         max_results=max_results,
     )
-    return results
