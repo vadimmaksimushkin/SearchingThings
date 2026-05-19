@@ -1,3 +1,6 @@
+-- Requires PostGIS extension:
+CREATE EXTENSION IF NOT EXISTS postgis;
+CREATE EXTENSION IF NOT EXISTS btree_gist;
 CREATE TABLE places (
     place_id        TEXT PRIMARY KEY,
     main_type       TEXT NOT NULL,           -- e.g. 'shopping_mall', 'gym'
@@ -7,8 +10,7 @@ CREATE TABLE places (
     website         TEXT,
     rating          REAL,
     rating_count    INTEGER,
-    latitude        DOUBLE PRECISION,
-    longitude       DOUBLE PRECISION,
+    geog            geography(Point, 4326) NOT NULL,
     plus_code       TEXT,
     category        TEXT[],
     opening_hours           JSONB,
@@ -16,6 +18,8 @@ CREATE TABLE places (
     emails          TEXT[],                  -- NULL = no emails recorded
     fetched_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE INDEX places_type_geog_gix ON places USING GIST (main_type, geog);
+CREATE INDEX places_geog_only_gix ON places USING GIST (geog); -- For KNN search
 
 CREATE TABLE reviews (
     place_id          TEXT NOT NULL REFERENCES places(place_id) ON DELETE CASCADE,

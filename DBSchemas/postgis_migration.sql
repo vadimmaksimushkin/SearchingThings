@@ -14,6 +14,7 @@ WHERE latitude IS NOT NULL AND longitude IS NOT NULL;
 ALTER TABLE places ALTER COLUMN geog SET NOT NULL;
 
 CREATE INDEX places_type_geog_gix ON places USING GIST (main_type, geog);
+CREATE INDEX places_geog_only_gix ON places USING GIST (geog); -- For KNN search
 
 ANALYZE places;
 
