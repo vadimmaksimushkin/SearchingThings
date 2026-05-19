@@ -1,14 +1,19 @@
 import sys
 import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import asyncpg
+import orjson
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from SearchAPI.models import Place, PlaceDetail
+from SearchAPI.models import DoneEvent, ErrorEvent, Place, PlaceDetail, PlacePreviewEvent
 from SearchAPI.search_local_db import (
     create_pool,
     fetch_place_detail,
@@ -82,3 +87,46 @@ async def get_place(request: Request, place_id: str) -> PlaceDetail:
     if place is None:
         raise HTTPException(status_code=404, detail=f"Place {place_id!r} not found")
     return place
+
+
+def _ndjson(event: BaseModel) -> bytes:
+    return orjson.dumps(event.model_dump()) + b"\n"
+
+
+async def _stream_search(
+    pool: asyncpg.Pool,
+    location: Location,
+    main_type: str,
+    max_results: int,
+    is_rectangle: bool,
+) -> AsyncIterator[bytes]:
+    try:
+        search = find_places_rectangle if is_rectangle else find_places_circle
+        places = await search(pool, location, main_type=main_type, max_results=max_results)
+        for place in places:
+            yield _ndjson(PlacePreviewEvent(place=place))
+        yield _ndjson(DoneEvent())
+    except Exception as e:
+        log.exception("search stream failed")
+        yield _ndjson(ErrorEvent(message=str(e)))
+
+
+@app.get("/searchStream")
+async def search_stream(
+    request: Request,
+    main_type: str,
+    lat: float = Query(..., ge=-90, le=90),
+    lon: float = Query(..., ge=-180, le=180),
+    radius: float = Query(..., gt=0, le=50000),
+    is_rectangle: bool = True,
+    max_results: int = Query(10, ge=1, le=2000),
+) -> StreamingResponse:
+    log.info(
+        f"[stream] mainType={main_type}, lat={lat}, lon={lon}, radius={radius}, "
+        f"isRectangle={is_rectangle}, maxResults={max_results}"
+    )
+    location = Location.from_center_point((lat, lon), radius, is_rectangle=is_rectangle)
+    return StreamingResponse(
+        _stream_search(request.app.state.pool, location, main_type, max_results, is_rectangle),
+        media_type="application/x-ndjson",
+    )
