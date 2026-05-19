@@ -1,13 +1,14 @@
 import asyncio
 import sys
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 import asyncpg
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from credentials import PLACES_DB_URL
+from SearchAPI.models import Photo, Place, PlaceDetail, Review
 from SearchAPI.search_by_location import Location
 
 
@@ -38,7 +39,7 @@ async def find_places_rectangle(
     location: Location,
     main_type: str,
     max_results: int = 10,
-    order_by: OrderBy = "rating") -> list[dict[str, Any]]:
+    order_by: OrderBy = "rating") -> list[Place]:
     if location.south_west is None or location.north_east is None:
         raise ValueError("Location has no bounding box (south_west / north_east)")
     if location.center_point is None:
@@ -76,7 +77,7 @@ async def find_places_rectangle(
                 main_type, sw_lon, sw_lat, ne_lon, ne_lat,
                 center_lon, center_lat, max_results,
             )
-    return [dict(row) for row in rows]
+    return [Place(**dict(row)) for row in rows]
 
 
 async def find_places_circle(
@@ -84,7 +85,7 @@ async def find_places_circle(
     location: Location,
     main_type: str,
     max_results: int = 10,
-    order_by: OrderBy = "location") -> list[dict[str, Any]]:
+    order_by: OrderBy = "location") -> list[Place]:
     if location.center_point is None or location.radius is None:
         raise ValueError("Location has no center point / radius for circle search")
 
@@ -113,7 +114,39 @@ async def find_places_circle(
             query,
             main_type, center_lon, center_lat, radius, max_results,
         )
-    return [dict(row) for row in rows]
+    return [Place(**dict(row)) for row in rows]
+
+
+REVIEW_COLUMNS = (
+    "name, rating, text, language_code, "
+    "author_name, author_uri, author_photo, "
+    "published_at, flag_content_uri, google_maps_uri"
+)
+PHOTO_COLUMNS = "name, width_px, height_px, google_maps_uri, flag_content_uri"
+
+
+async def fetch_place_detail(pool: asyncpg.Pool, place_id: str) -> PlaceDetail | None:
+    place_query = f"SELECT {PLACE_COLUMNS} FROM places WHERE place_id = $1"
+    reviews_query = f"""
+        SELECT {REVIEW_COLUMNS}
+        FROM reviews
+        WHERE place_id = $1
+        ORDER BY published_at DESC NULLS LAST
+    """
+    photos_query = f"SELECT {PHOTO_COLUMNS} FROM photos WHERE place_id = $1"
+
+    async with pool.acquire() as conn:
+        place_row = await conn.fetchrow(place_query, place_id)
+        if place_row is None:
+            return None
+        review_rows = await conn.fetch(reviews_query, place_id)
+        photo_rows = await conn.fetch(photos_query, place_id)
+
+    return PlaceDetail(
+        **dict(place_row),
+        reviews=[Review(**dict(r)) for r in review_rows],
+        photos=[Photo(**dict(r)) for r in photo_rows],
+    )
 
 
 if __name__ == "__main__":

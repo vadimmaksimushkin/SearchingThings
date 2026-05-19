@@ -2,14 +2,19 @@ import sys
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
 
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from SearchAPI.search_local_db import create_pool, find_places_circle, find_places_rectangle
+from SearchAPI.models import Place, PlaceDetail
+from SearchAPI.search_local_db import (
+    create_pool,
+    fetch_place_detail,
+    find_places_circle,
+    find_places_rectangle,
+)
 from SearchAPI.search_by_location import Location
 
 
@@ -56,7 +61,7 @@ async def search_by_location(
     is_rectangle: bool = True,
     local_only: bool = True,
     max_results: int = Query(10, ge=1, le=2000),
-) -> list[dict[str, Any]]:
+) -> list[Place]:
     log.info(
         f"mainType={main_type}, lat={lat}, lon={lon}, radius={radius}, "
         f"localOnly={local_only}, maxResults={max_results}"
@@ -69,3 +74,11 @@ async def search_by_location(
         main_type=main_type,
         max_results=max_results,
     )
+
+
+@app.get("/place/{place_id}")
+async def get_place(request: Request, place_id: str) -> PlaceDetail:
+    place = await fetch_place_detail(request.app.state.pool, place_id)
+    if place is None:
+        raise HTTPException(status_code=404, detail=f"Place {place_id!r} not found")
+    return place
