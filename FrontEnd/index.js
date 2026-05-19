@@ -45,6 +45,18 @@ async function init() {
   });
   let resultMarkers = [];
 
+  async function clearMarkers(markers) {
+    const YIELD_EVERY = 30;
+    let i = 0;
+    for (const m of markers) {
+      m.map = null;
+      i += 1;
+      if (i % YIELD_EVERY === 0) {
+        await new Promise((r) => setTimeout(r, 0));
+      }
+    }
+  }
+
   function setSearchLocation(lat, lng) {
     latInput.value = lat.toFixed(6);
     lonInput.value = lng.toFixed(6);
@@ -66,10 +78,7 @@ async function init() {
 
     userMarker.position = {lat, lng: lon};
 
-    for (const m of resultMarkers) {
-      m.map = null;
-      m.map = null;
-    }
+    await clearMarkers(resultMarkers);
     resultMarkers = [];
 
     debug.textContent = '';
@@ -77,23 +86,55 @@ async function init() {
         lon}, radius=${radius}, is_rectangle=${is_rectangle}, max-restuls=${
         max_results}, localOnly=${local_only}\n`
     try {
-      const results = await searchByLocation(
-          main_type, lat, lon, radius, is_rectangle, local_only, max_results);
-      debug.textContent += `results count: ${results?.length}\n`;
-      debug.textContent += JSON.stringify(results, null, 2);
+      // const results = await searchByLocation( main_type, lat,
+      // lon, radius, is_rectangle, local_only, max_results); debug.textContent +=
+      // `results count: ${results?.length}\n`; debug.textContent +=
+      // JSON.stringify(results, null, 2);
 
-      for (const place of results) {
-        const marker = new AdvancedMarkerElement({
-          map: innerMap,
-          position: {lat: place.latitude, lng: place.longitude},
-          title: place.name,
-          gmpClickable: true,
-        });
-        marker.addListener('gmp-click', () => {
-          infoWindow.setContent(buildPlaceCard(place));
-          infoWindow.open({map: innerMap, anchor: marker});
-        });
-        resultMarkers.push(marker);
+      // for (const place of results) {
+      //   const marker = new AdvancedMarkerElement({
+      //     map: innerMap,
+      //     position: {lat: place.latitude, lng: place.longitude},
+      //     title: place.name,
+      //     gmpClickable: true,
+      //   });
+      //   marker.addListener('gmp-click', () => {
+      //     infoWindow.setContent(buildPlaceCard(place));
+      //     infoWindow.open({map: innerMap, anchor: marker});
+      //   });
+      //   resultMarkers.push(marker);
+      // }
+
+      const events = await searchByLocationStream(
+          main_type, lat, lon, radius, is_rectangle, max_results);
+      const YIELD_EVERY = 30;
+      let count = 0;
+      for await (const event of events) {
+        if (event.type === 'place_preview' || event.type === 'place_update') {
+          const place = event.place;
+          const marker = new AdvancedMarkerElement({
+            map: innerMap,
+            position: {lat: place.latitude, lng: place.longitude},
+            title: place.name,
+            gmpClickable: true,
+          });
+          marker.addListener('gmp-click', () => {
+            infoWindow.setContent(buildPlaceCard(place));
+            infoWindow.open({map: innerMap, anchor: marker});
+          });
+          resultMarkers.push(marker);
+          count += 1;
+          if (count % YIELD_EVERY === 0) {
+            debug.textContent = `received: ${count}`;
+            await new Promise((r) => setTimeout(r, 0));
+          }
+        } else if (event.type === 'done') {
+          debug.textContent = `done (total: ${count})`;
+        } else if (event.type === 'error') {
+          debug.textContent += `\nstream error: ${event.message}`;
+        } else {
+          console.warn('unknown stream event type:', event);
+        }
       }
     } catch (err) {
       debug.textContent += 'Search failed: ' + err.message;
@@ -102,10 +143,7 @@ async function init() {
     }
   });
   clearBtn.addEventListener('click', async () => {
-    for (const m of resultMarkers) {
-      m.map = null;
-      m.map = null;
-    }
+    await clearMarkers(resultMarkers);
     resultMarkers = [];
     infoWindow.close();
     userMarker.position = {lat: cdmx_center_lat, lng: cdmx_center_lon};
@@ -129,6 +167,44 @@ async function searchByLocation(
     throw new Error(`HTTP ${response.status}: ${await response.text()}`);
   }
   return response.json();
+}
+
+async function searchByLocationStream(
+    main_type, lat, lon, radius, is_rectangle, max_results) {
+  const params = new URLSearchParams({
+    main_type,
+    lat: String(lat),
+    lon: String(lon),
+    radius: String(radius),
+    is_rectangle: String(is_rectangle),
+    max_results: String(max_results),
+  });
+  const response = await fetch(`${API_BASE}/searchStream?${params}`);
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+  }
+  return readNdjson(response);
+}
+
+async function* readNdjson(response) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  while (true) {
+    const {value, done} = await reader.read();
+    if (done) {
+      const tail = buf.trim();
+      if (tail) yield JSON.parse(tail);
+      return;
+    }
+    buf += decoder.decode(value, {stream: true});
+    let nl;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl);
+      buf = buf.slice(nl + 1);
+      if (line) yield JSON.parse(line);
+    }
+  }
 }
 
 function buildPlaceCard(place) {
