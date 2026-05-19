@@ -107,7 +107,7 @@ async def find_places_circle(
     """
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            query_order_by_rating, main_type, sw_lat, ne_lat, sw_lon, ne_lon,
+            query_order_by_location, main_type, sw_lat, ne_lat, sw_lon, ne_lon,
             center_lat, center_lon, radius, max_results,
         )
     return [dict(row) for row in rows]
@@ -119,17 +119,23 @@ if __name__ == "__main__":
         try:
             CDMX_TEST = (19.412429, -99.1664120)
 
-            rect_loc = Location.from_center_point(CDMX_TEST, 15_500, is_rectangle=True)
-            rect_results = await find_places_rectangle(pool, rect_loc, main_type="gym", max_results=20)
-            print(f"[rectangle] {len(rect_results)} places")
-            for r in rect_results:
-                print(f"  - {r['name']!r} rating={r['rating']} count={r['rating_count']}")
+            rect_loc = Location.from_center_point(CDMX_TEST, 50_000, is_rectangle=True)
+            circle_loc = Location.from_center_point(CDMX_TEST, 50_000, is_rectangle=False)
+            rect_results = await find_places_rectangle(pool, rect_loc, main_type="gym", max_results=2_000)
+            circle_results = await find_places_circle(pool, circle_loc, main_type="gym", max_results=2_000)
+            print(len(rect_results))
+            print(len(circle_results))
+            print("done")
+            # rect_results = await find_places_rectangle(pool, rect_loc, main_type="gym", max_results=20)
+            # print(f"[rectangle] {len(rect_results)} places")
+            # for r in rect_results:
+            #     print(f"  - {r['name']!r} rating={r['rating']} count={r['rating_count']}")
 
-            circle_loc = Location.from_center_point(CDMX_TEST, 15_500, is_rectangle=False)
-            circle_results = await find_places_circle(pool, circle_loc, main_type="gym", max_results=20)
-            print(f"[circle]    {len(circle_results)} places")
-            for r in circle_results:
-                print(f"  - {r['name']!r} rating={r['rating']} count={r['rating_count']}")
+            # circle_loc = Location.from_center_point(CDMX_TEST, 15_500, is_rectangle=False)
+            # circle_results = await find_places_circle(pool, circle_loc, main_type="gym", max_results=20)
+            # print(f"[circle]    {len(circle_results)} places")
+            # for r in circle_results:
+            #     print(f"  - {r['name']!r} rating={r['rating']} count={r['rating_count']}")
         finally:
             await pool.close()
 
