@@ -47,8 +47,8 @@ def place_row(entry: dict[str, Any], main_type: str) -> tuple[Any, ...]:
         entry.get("website"),
         entry.get("rating"),
         entry.get("rating_count"),
-        coords.get("latitude"),
         coords.get("longitude"),
+        coords.get("latitude"),
         entry.get("plus_code"),
         entry.get("category"),
         entry.get("opening_hours"),
@@ -100,9 +100,13 @@ def photo_rows(entry: dict[str, Any]) -> list[tuple[Any, ...]]:
 PLACE_INSERT = """
 INSERT INTO places (
     place_id, main_type, name, address, phone, website,
-    rating, rating_count, latitude, longitude, plus_code, category,
+    rating, rating_count, geog, plus_code, category,
     opening_hours, secondary_opening_hours, emails
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8,
+    ST_SetSRID(ST_MakePoint($9, $10), 4326)::geography,
+    $11, $12, $13, $14, $15
+)
 ON CONFLICT (place_id) DO NOTHING
 """
 
