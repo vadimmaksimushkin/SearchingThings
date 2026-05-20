@@ -16,6 +16,7 @@ CREATE TABLE places (
     opening_hours           JSONB,
     secondary_opening_hours JSONB,
     emails          TEXT[],                  -- NULL = no emails recorded
+    preview_photo   TEXT,                    -- NULL or Google photo reference
     fetched_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX places_type_geog_gix ON places USING GIST (main_type, geog);
