@@ -22,12 +22,16 @@
     <br/>
     <label>Type: <input id="type-input" type="text" value="gym" /></label>
     <br/>
-    <label><input id="local-only" type="checkbox"/> Local DB only</label>
+    <label><input id="local-only" type="checkbox" checked="true"/> Local DB only</label>
+    <label><input id="include-reviews-input" type="checkbox" checked="true"/> Include reviews</label>
+    <label><input id="include-photos-input" type="checkbox" checked="true"/> Include photos</label>
     <br/>
     <button id="search-btn">Search</button>
     <button id="clear-btn">Clear</button>
     <gmp-map center="19.416654, -99.137536" zoom="12" map-id="DEMO_MAP_ID"></gmp-map>
     <h3>Debug</h3>
     <pre id="debug"></pre>
+    <h3>Raw NDJSON</h3>
+    <pre id="debug2"></pre>
   </body>
 </html>
