@@ -7,3 +7,13 @@ gmp-map {
   border-bottom: 1px solid #000000;
   padding: 8px 0;
 }
+
+.preview-photo {
+  display: block;
+  max-width: 200px;
+}
+
+.gm-style-iw .preview-photo {
+  max-width: 100%;
+  height: auto;
+}

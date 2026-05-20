@@ -300,21 +300,37 @@ async function* readNdjson(response) {
 function buildPlaceCard(place) {
   const card = document.createElement('div');
 
-  appendBoldRow(card, place.name);
-  appendTextRow(card, place.place_id);
-  appendTextRow(card, place.main_type);
+  if (place.preview_photo !== undefined) {
+    const img = document.createElement('img');
+    img.src = './test-photo.jpeg';
+    img.alt = '';
+    img.className = 'preview-photo';
+    card.appendChild(img);
+  }
+
+  const header = document.createElement('div');
+  const nameStrong = document.createElement('strong');
+  nameStrong.textContent = place.name ?? '';
+  header.appendChild(nameStrong);
   if (place.rating != null) {
-    appendTextRow(
-        card,
-        `Rating ★ ${place.rating.toFixed(1)} (${place.rating_count} reviews)`);
+    header.appendChild(document.createTextNode(
+        ` ★ ${place.rating.toFixed(1)} (${place.rating_count})`));
   }
-  appendTextRow(card, place.address);
-  if (place.phone) {
-    appendLinkRow(card, `tel:${place.phone}`, place.phone);
-  }
+  card.appendChild(header);
+
   if (place.website) {
-    appendLinkRow(card, place.website, place.website, '_blank');
+    const row = document.createElement('div');
+    const strong = document.createElement('strong');
+    const a = document.createElement('a');
+    a.href = place.website;
+    a.textContent = place.website;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    strong.appendChild(a);
+    row.appendChild(strong);
+    card.appendChild(row);
   }
+
   if (place.emails && place.emails.length > 0) {
     const row = document.createElement('div');
     place.emails.forEach((email, i) => {
@@ -326,16 +342,16 @@ function buildPlaceCard(place) {
     });
     card.appendChild(row);
   }
-  if (place.latitude != null && place.longitude != null) {
-    appendTextRow(card, `${place.latitude}, ${place.longitude}`);
-  }
-  appendTextRow(card, place.plus_code);
-  if (place.category && place.category.length > 0) {
-    appendTextRow(card, place.category.join(', '));
-  }
-  if (place.reviews && place.reviews.length > 0) {
-    appendBoldRow(card, `Reviews (${place.reviews.length})`);
-    for (const r of place.reviews) {
+
+  // appendReviewsSection(card, place.reviews);
+  // appendPhotosSection(card, place.photos);
+  return card;
+}
+
+function appendReviewsSection(card, reviews) {
+  if (reviews?.length) {
+    appendBoldRow(card, `Reviews (${reviews.length})`);
+    for (const r of reviews) {
       const date = r.published_at ? r.published_at.slice(0, 10) : '';
       const star = r.rating != null ? `★ ${r.rating}` : '★ -';
       const author = r.author_name ?? 'anon';
@@ -343,13 +359,15 @@ function buildPlaceCard(place) {
       appendTextRow(card, r.text);
     }
   }
-  if (place.photos && place.photos.length > 0) {
-    appendBoldRow(card, `Photos (${place.photos.length})`);
-    for (const p of place.photos) {
+}
+
+function appendPhotosSection(card, photos) {
+  if (photos?.length) {
+    appendBoldRow(card, `Photos (${photos.length})`);
+    for (const p of photos) {
       appendLinkRow(card, p.google_maps_uri, p.google_maps_uri, '_blank');
     }
   }
-  return card;
 }
 
 function appendTextRow(parent, text) {
