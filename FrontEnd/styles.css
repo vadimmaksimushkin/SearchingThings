@@ -2,3 +2,8 @@ gmp-map {
   display: block;
   height: 60vh;
 }
+
+.place-card {
+  border-bottom: 1px solid #000000;
+  padding: 8px 0;
+}

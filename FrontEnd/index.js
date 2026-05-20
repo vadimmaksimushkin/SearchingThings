@@ -34,6 +34,7 @@ async function init() {
   const clearBtn = document.getElementById('clear-btn');
   const debug = document.getElementById('debug');
   const debug2 = document.getElementById('debug2');
+  const placesList = document.getElementById('places-list');
 
   const userPin = new PinElement({
     background: '#1a73e8',
@@ -109,6 +110,22 @@ async function init() {
     return true;
   }
 
+  function renderListEntry(place_id) {
+    const entry = placeStore.get(place_id);
+    if (!entry) return;
+    const detail = {...entry.place, reviews: entry.reviews, photos: entry.photos};
+    const card = buildPlaceCard(detail);
+    if (entry.listEntry) {
+      entry.listEntry.replaceChildren(card);
+    } else {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'place-card';
+      wrapper.appendChild(card);
+      placesList.appendChild(wrapper);
+      entry.listEntry = wrapper;
+    }
+  }
+
   function setSearchLocation(lat, lng) {
     latInput.value = lat.toFixed(6);
     lonInput.value = lng.toFixed(6);
@@ -138,6 +155,7 @@ async function init() {
 
     debug.textContent = '';
     debug2.textContent = '';
+    placesList.replaceChildren();
     debug.textContent += `Input mainType=${main_type}, lat=${lat}, lon=${
         lon}, radius=${radius}, is_rectangle=${is_rectangle}, max-restuls=${
         max_results}, localOnly=${local_only}, includeReviews=${
@@ -174,12 +192,19 @@ async function init() {
         debug2.textContent += JSON.stringify(event, null, 2) + '\n';
         if (event.type === 'place_preview' || event.type === 'place_update') {
           await upsertMarker(event.place, enriched, counter, YIELD_EVERY);
+          renderListEntry(event.place.place_id);
         } else if (event.type === 'reviews') {
           const entry = placeStore.get(event.place_id);
-          if (entry) entry.reviews.push(...event.items);
+          if (entry) {
+            entry.reviews.push(...event.items);
+            renderListEntry(event.place_id);
+          }
         } else if (event.type === 'photos') {
           const entry = placeStore.get(event.place_id);
-          if (entry) entry.photos.push(...event.items);
+          if (entry) {
+            entry.photos.push(...event.items);
+            renderListEntry(event.place_id);
+          }
         } else if (event.type === 'done') {
           debug.textContent = `done (total: ${counter.n})`;
         } else if (event.type === 'error') {
@@ -202,6 +227,7 @@ async function init() {
     userMarker.position = {lat: cdmx_center_lat, lng: cdmx_center_lon};
     debug.textContent = '';
     debug2.textContent = '';
+    placesList.replaceChildren();
   });
 }
 
@@ -313,14 +339,14 @@ function buildPlaceCard(place) {
       const date = r.published_at ? r.published_at.slice(0, 10) : '';
       const star = r.rating != null ? `★ ${r.rating}` : '★ -';
       const author = r.author_name ?? 'anon';
-      appendTextRow(card, `${star} — ${author} (${date})`);
-      appendTextRow(card, JSON.stringify(r, null, 2));
+      appendBoldRow(card, `${star} — ${author} (${date})`);
+      appendTextRow(card, r.text);
     }
   }
   if (place.photos && place.photos.length > 0) {
     appendBoldRow(card, `Photos (${place.photos.length})`);
     for (const p of place.photos) {
-      appendTextRow(card, JSON.stringify(p, null, 2));
+      appendLinkRow(card, p.google_maps_uri, p.google_maps_uri, '_blank');
     }
   }
   return card;
