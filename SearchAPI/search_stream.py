@@ -34,7 +34,7 @@ from SearchAPI.local_db_query import (
     upsert_reviews,
 )
 from SearchAPI.tasks import detach
-
+from constants import TYPE_TO_SEARCH
 log = logging.getLogger(__name__)
 
 
@@ -154,9 +154,11 @@ async def stage2_3_google(
     place"""
     # stage 2
     try:
-        # FIXME: text_query with i18n
         id_results = await google_text_search(
-            location, is_rectangle, text_query=main_type, live=False
+            location,
+            is_rectangle,
+            text_query=TYPE_TO_SEARCH.get(main_type, main_type),
+            live=False
             )
     except Exception as e:
         log.exception("textSearch stage failed")
@@ -198,9 +200,9 @@ async def stream_search(
     include_photos: bool,
 ) -> AsyncIterator[bytes]:
     streamed_ids: set[str] = set()
-    # FIXME: remove live block when ready
-    if not local_only:
-        local_only = True
+    # # FIXME: remove live block when ready
+    # if not local_only:
+    #     local_only = True
     try:
         async for chunk in stage1_local(
             pool, location, main_type, max_results, is_rectangle,

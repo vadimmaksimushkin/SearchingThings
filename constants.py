@@ -321,5 +321,9 @@ CONTACT_KEYWORDS = [
     "info",
 ]
 
+TYPE_TO_SEARCH = {
+    "shopping_mall": "centro comercial",
+    "gym": "gimnasio"
+}
 
 PLACES_URL = "https://places.googleapis.com/v1/places:searchText"
