@@ -5,16 +5,12 @@ Two layers:
   - Stream event models (PlacePreviewEvent, ReviewsEvent, ...) wrap entities
     with a `type` discriminator for the NDJSON streaming endpoint.
 """
-from __future__ import annotations
-
 from datetime import datetime
 from typing import Literal
-
 from pydantic import BaseModel, Field
 
 
-# ---------- Domain models ----------
-
+# Domain models
 class Place(BaseModel):
     place_id: str
     main_type: str
@@ -59,8 +55,7 @@ class PlaceDetail(Place):
     photos: list[Photo] = Field(default_factory=list) # pyright: ignore[reportUnknownVariableType]
 
 
-# ---------- Stream events (NDJSON wire format) ----------
-
+# Stream events (NDJSON)
 class PlacePreviewEvent(BaseModel):
     type: Literal["place_preview"] = "place_preview"
     place: Place
@@ -99,4 +94,5 @@ StreamEvent = (
     | PhotosEvent
     | DoneEvent
     | ErrorEvent
+    | None
 )
