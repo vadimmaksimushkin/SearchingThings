@@ -1,0 +1,18 @@
+FROM docker.io/library/python:3.13-slim
+
+WORKDIR /app
+
+COPY SearchAPI/requirements-searchapi.txt /app/
+RUN pip install --no-cache-dir -r requirements-searchapi.txt
+
+COPY credentials.py constants.py places.py /app/
+COPY SearchAPI/__init__.py SearchAPI/main.py SearchAPI/models.py \
+     SearchAPI/google_fetch.py SearchAPI/local_db_query.py \
+     SearchAPI/search_stream.py SearchAPI/tasks.py /app/SearchAPI/
+
+EXPOSE 8000
+
+ENTRYPOINT ["uvicorn", "SearchAPI.main:app", \
+            "--host", "0.0.0.0", "--port", "8000", \
+            "--workers", "1", \
+            "--proxy-headers", "--forwarded-allow-ips", "*"]

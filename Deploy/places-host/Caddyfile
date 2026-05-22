@@ -1,0 +1,11 @@
+{
+	email {$ACME_EMAIL}
+}
+
+{$DOMAIN}, www.{$DOMAIN} {
+	encode gzip
+
+	handle_path /api/* {
+		reverse_proxy searchapi:8000
+	}
+}

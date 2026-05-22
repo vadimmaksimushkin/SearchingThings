@@ -1,7 +1,6 @@
 services:
   pg_places:
-    # image: docker.io/library/postgres:18-alpine
-    image: docker.io/postgis/postgis:18-3.6-alpine
+    image: docker.io/imresamu/postgis:18-3.6-alpine
     container_name: pg_places
     restart: unless-stopped
     environment:
@@ -36,5 +35,42 @@ services:
       - "--batch-size=1000"
       - "--interval=30"
 
+  searchapi:
+    build:
+      context: ../..
+      dockerfile: SearchAPI/Containerfile
+    image: searchapi:local
+    container_name: searchapi
+    restart: unless-stopped
+    mem_limit: 400m
+    memswap_limit: 400m
+    environment:
+      GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY}
+      PLACES_DB_URL: postgresql://postgres:${POSTGRES_PASSWORD}@pg_places:5432/places
+      QUEUE_DB_URL: ""
+    depends_on:
+      pg_places:
+        condition: service_healthy
+
+  caddy:
+    image: docker.io/library/caddy:2-alpine
+    container_name: caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro,Z
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - searchapi
+
 volumes:
   pg_places_data:
+  caddy_data:
+  caddy_config:
