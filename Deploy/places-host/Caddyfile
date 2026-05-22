@@ -8,4 +8,9 @@
 	handle_path /api/* {
 		reverse_proxy searchapi:8000
 	}
+
+	handle {
+		root * /srv/frontend
+		file_server
+	}
 }

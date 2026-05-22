@@ -53,7 +53,7 @@ services:
         condition: service_healthy
 
   caddy:
-    image: docker.io/library/caddy:2-alpine
+    image: docker.io/library/caddy:2.11-alpine
     container_name: caddy
     restart: unless-stopped
     ports:
@@ -65,6 +65,7 @@ services:
       ACME_EMAIL: ${ACME_EMAIL}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro,Z
+      - ../../FrontEnd:/srv/frontend:ro,Z
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
