@@ -1,5 +1,6 @@
 import asyncio
 import asyncpg
+import os
 import sys
 import logging
 from collections.abc import Awaitable, Callable
@@ -63,7 +64,7 @@ async def lifespan(app: FastAPI):
             log.info("asyncpg pool closed")
 
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(lifespan=lifespan, root_path=os.environ.get("ROOT_PATH", ""))
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

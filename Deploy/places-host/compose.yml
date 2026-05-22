@@ -48,6 +48,7 @@ services:
       GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY}
       PLACES_DB_URL: postgresql://postgres:${POSTGRES_PASSWORD}@pg_places:5432/places
       QUEUE_DB_URL: ""
+      ROOT_PATH: /api
     depends_on:
       pg_places:
         condition: service_healthy
