@@ -1,7 +1,8 @@
 'use strict';
 
-const API_PORT = 8000;
-const API_BASE = `http://localhost:${API_PORT}`;
+const API_BASE = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
+  ? 'http://localhost:8000'
+  : '/api';
 
 
 async function init() {
@@ -302,7 +303,7 @@ function buildPlaceCard(place) {
 
   if (place.preview_photo !== undefined) {
     const img = document.createElement('img');
-    img.src = './test-photo.jpeg';
+    img.src = 'images/test-photo.jpeg';
     img.alt = '';
     img.className = 'preview-photo';
     card.appendChild(img);
