@@ -4,14 +4,15 @@ import sys
 import logging
 import math
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, ClassVar
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from credentials import GOOGLE_MAPS_API_KEY
 from places import ShoppingMall
 from SearchAPI.models import Photo, Place, Review
-from SearchAPI.local_db_query import parse_published_at
 from constants import PLACES_URL
+
 
 log = logging.getLogger(__name__)
 
@@ -83,6 +84,13 @@ class Location:
             }
         }
 
+
+def parse_published_at(s: str | None) -> datetime | None:
+    if not s:
+        return None
+    return datetime.fromisoformat(s)
+
+
 async def paginated_search(
     session: aiohttp.ClientSession,
     text_query: str,
@@ -121,6 +129,7 @@ async def paginated_search(
             break
         payload["pageToken"] = token
     return results
+
 
 async def google_text_search(
     location: Location, is_rectangle: bool, text_query: str, live: bool = False,

@@ -2,13 +2,12 @@ import asyncio
 import asyncpg
 import orjson
 import sys
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from credentials import PLACES_DB_URL
 from SearchAPI.models import Photo, Place, PlaceDetail, Review
-from SearchAPI.google_fetch import Location
+from SearchAPI.google_fetch import Location, parse_published_at
 
 
 PLACE_COLUMNS = (
@@ -150,11 +149,6 @@ ON CONFLICT (place_id, name) DO UPDATE SET
 """
 
 ORDER_BY = Literal["rating", "location"]
-
-def parse_published_at(s: str | None) -> datetime | None:
-    if not s:
-        return None
-    return datetime.fromisoformat(s)
 
 
 async def init_connection(conn: asyncpg.Connection) -> None:
