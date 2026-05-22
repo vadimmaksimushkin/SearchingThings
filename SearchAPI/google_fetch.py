@@ -143,6 +143,8 @@ async def google_text_search(
     is_rectangle=True: locationRestriction by rectangle
     is_rectangle=False: locationBias by circle
     """
+    # FIXME: deal with restictions
+    is_rectangle = True # default to location restriction
     if is_rectangle:
         location_payload: dict[str, Any] = location.to_rectangle()
         location_restriction_type: str = "locationRestriction"
