@@ -10,7 +10,6 @@ in [10, 15] jobs to refresh the playwright session and rotate UA.
 """
 # FIXME: simplify wrappers and handlers
 # FIXME: remove bugs with error handling and DB reconnection
-import argparse
 import asyncio
 import asyncpg
 import aioboto3 # pyright: ignore[reportMissingTypeStubs]
@@ -523,7 +522,7 @@ async def run_service(headless: bool, poll_interval_s: float = POLL_INTERVAL_S) 
     # the async-with form would re-raise them as the wrapping context unwinds.
     session = aioboto3.Session()
     async with session.client( # pyright: ignore
-        "R2",
+        "s3",
         endpoint_url=R2_ENDPOINT,
         aws_access_key_id=R2_ACCESS_KEY,
         aws_secret_access_key=R2_SECRET_ACCESS_KEY,
@@ -562,24 +561,27 @@ async def run_service(headless: bool, poll_interval_s: float = POLL_INTERVAL_S) 
     log.info("Shutdown clean")
 
 
-def bounded[T: (int, float)](t: type[T], low: T, high: T) -> Callable[[str], T]:
-    def check(s: str) -> T:
-        try:
-            v = t(s)
-        except ValueError:
-            raise argparse.ArgumentTypeError(f"expected {t.__name__}, got {s!r}")
-        if not (low <= v <= high):
-            raise argparse.ArgumentTypeError(f"must be in [{low}, {high}], got {v}")
-        return v
-    return check
 
 
 if __name__ == "__main__":
+    import argparse
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
         stream=sys.stderr,
     )
+    def bounded[T: (int, float)](t: type[T], low: T, high: T) -> Callable[[str], T]:
+        """argparse type: parse with type(), then enforce low <= value <= high"""
+        def check(s: str) -> T:
+            try:
+                v = t(s)
+            except ValueError:
+                raise argparse.ArgumentTypeError(f"expected {t.__name__}, got {s!r}")
+            if not (low <= v <= high):
+                raise argparse.ArgumentTypeError(f"must be in [{low}, {high}], got {v}")
+            return v
+        return check
+
     p = argparse.ArgumentParser()
     p.add_argument("--no-headless", action="store_true",
                    help="run chromium with a visible window (calibration only)")
