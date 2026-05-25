@@ -127,6 +127,30 @@ INSERT INTO photos (
 ON CONFLICT (place_id, name) DO NOTHING
 """
 
+# For each place_id in $1 that has no is_preview row, mark one photo
+# (lowest ctid = best-effort first-inserted) as is_preview. The partial
+# unique index photos_one_preview_per_place backstops concurrent writers.
+SET_PREVIEW_FOR_BATCH = """
+WITH places_needing_preview AS (
+    SELECT DISTINCT p.place_id
+    FROM photos p
+    WHERE p.place_id = ANY($1::text[])
+      AND NOT EXISTS (
+          SELECT 1 FROM photos pp
+          WHERE pp.place_id = p.place_id AND pp.is_preview
+      )
+),
+chosen AS (
+    SELECT DISTINCT ON (place_id) place_id, ctid
+    FROM photos
+    WHERE place_id IN (SELECT place_id FROM places_needing_preview)
+    ORDER BY place_id, ctid
+)
+UPDATE photos SET is_preview = TRUE
+FROM chosen
+WHERE photos.ctid = chosen.ctid
+"""
+
 
 async def chunked_executemany(
     conn: asyncpg.Connection,
@@ -167,6 +191,9 @@ async def load_file(conn: asyncpg.Connection, path: Path, main_type: str) -> Non
         await chunked_executemany(conn, PLACE_INSERT, places, "places")
         await chunked_executemany(conn, REVIEW_INSERT, reviews, "reviews")
         await chunked_executemany(conn, PHOTO_INSERT, photos, "photos")
+        if photos:
+            photo_place_ids = list({row[0] for row in photos})
+            await conn.execute(SET_PREVIEW_FOR_BATCH, photo_place_ids)
 
 
 async def main() -> None:
