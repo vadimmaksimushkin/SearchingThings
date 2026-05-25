@@ -150,6 +150,11 @@ ON CONFLICT (place_id, name) DO UPDATE SET
     raw              = EXCLUDED.raw
 """
 
+CLEAR_PREVIEW_SQL = """
+UPDATE photos SET is_preview = FALSE
+WHERE place_id = $1 AND is_preview
+"""
+
 UPSERT_PHOTO_SQL = """
 INSERT INTO photos (
     place_id, name, width_px, height_px,
@@ -161,7 +166,8 @@ ON CONFLICT (place_id, name) DO UPDATE SET
     author_attributions = EXCLUDED.author_attributions,
     google_maps_uri     = EXCLUDED.google_maps_uri,
     flag_content_uri    = EXCLUDED.flag_content_uri,
-    raw                 = EXCLUDED.raw
+    raw                 = EXCLUDED.raw,
+    is_preview          = EXCLUDED.is_preview
 """
 
 ORDER_BY = Literal["rating", "location"]
@@ -361,6 +367,7 @@ async def upsert_photos(
         )
         for i, photo in enumerate(photos)
     ]
+    await conn.execute(CLEAR_PREVIEW_SQL, place_id)
     await conn.executemany(UPSERT_PHOTO_SQL, rows)
 
 

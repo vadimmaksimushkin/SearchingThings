@@ -200,9 +200,9 @@ async def stream_search(
     include_photos: bool,
 ) -> AsyncIterator[bytes]:
     streamed_ids: set[str] = set()
-    # FIXME: remove live block when ready
-    if not local_only:
-        local_only = True
+    # # FIXME: remove live block when ready
+    # if not local_only:
+    #     local_only = True
     try:
         async for chunk in stage1_local(
             pool, location, main_type, max_results, is_rectangle,
