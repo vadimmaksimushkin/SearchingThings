@@ -301,9 +301,9 @@ async function* readNdjson(response) {
 function buildPlaceCard(place) {
   const card = document.createElement('div');
 
-  if (place.preview_photo !== undefined) {
+  if (place.preview_photo) {
     const img = document.createElement('img');
-    img.src = 'images/test-photo.jpeg';
+    img.src = place.preview_photo;
     img.alt = '';
     img.className = 'preview-photo';
     card.appendChild(img);

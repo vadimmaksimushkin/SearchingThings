@@ -64,7 +64,7 @@ REVIEW_COLUMNS = (
     "published_at, flag_content_uri, google_maps_uri"
 )
 
-PHOTO_COLUMNS = "name, width_px, height_px, google_maps_uri, flag_content_uri"
+PHOTO_COLUMNS = "name, width_px, height_px, google_maps_uri, flag_content_uri, bucket_key, is_preview"
 
 PLACE_QUERY = f"SELECT {PLACE_COLUMNS} FROM places_with_preview WHERE place_id = $1"
 
@@ -74,6 +74,14 @@ def add_preview_link_to_place(row_dict: dict[str, Any]) -> dict[str, Any]:
     bucket_key = row_dict.get("preview_photo")
     if bucket_key:
         row_dict["preview_photo"] = f"{R2_PUBLIC_URL}/{bucket_key}"
+    return row_dict
+
+
+def add_url_to_photo(row_dict: dict[str, Any]) -> dict[str, Any]:
+    """Convert photo bucket_key into a full R2 HTTPS URL."""
+    bucket_key = row_dict.get("bucket_key")
+    if bucket_key:
+        row_dict["bucket_key"] = f"{R2_PUBLIC_URL}/{bucket_key}"
     return row_dict
 
 REVIEWS_QUERY = f"""
@@ -240,7 +248,7 @@ async def fetch_place_detail(pool: asyncpg.Pool, place_id: str) -> PlaceDetail |
     return PlaceDetail(
         **add_preview_link_to_place(dict(place_row)),
         reviews=[Review(**dict(row)) for row in review_rows],
-        photos=[Photo(**dict(row)) for row in photo_rows],
+        photos=[Photo(**add_url_to_photo(dict(row))) for row in photo_rows],
     )
 
 
@@ -270,7 +278,7 @@ async def fetch_photos_for_ids(
     for r in rows:
         d = dict(r)
         pid = d.pop("place_id") # raw photo has 'place_id' encoded in 'name'
-        result.setdefault(pid, []).append(Photo(**d))
+        result.setdefault(pid, []).append(Photo(**add_url_to_photo(d)))
     return result
 
 

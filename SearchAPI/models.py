@@ -47,6 +47,8 @@ class Photo(BaseModel):
     height_px: int | None = None
     google_maps_uri: str | None = None
     flag_content_uri: str | None = None
+    bucket_key: str | None = None
+    is_preview: bool = False
 
 
 class PlaceDetail(Place):
