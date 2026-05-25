@@ -1,7 +1,8 @@
 -- Requires PostGIS extension:
 CREATE EXTENSION IF NOT EXISTS postgis;
 CREATE EXTENSION IF NOT EXISTS btree_gist;
-CREATE TABLE places (
+
+CREATE TABLE IF NOT EXISTS places (
     place_id        TEXT PRIMARY KEY,
     main_type       TEXT NOT NULL,           -- e.g. 'shopping_mall', 'gym'
     name            TEXT,
@@ -16,13 +17,14 @@ CREATE TABLE places (
     opening_hours           JSONB,
     secondary_opening_hours JSONB,
     emails          TEXT[],                  -- NULL = no emails recorded
-    preview_photo   TEXT,                    -- NULL or Google photo reference
     fetched_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    -- preview_photo lives on the places_with_preview view (below), sourced
+    -- from photos.bucket_key WHERE is_preview = TRUE.
 );
-CREATE INDEX places_type_geog_gix ON places USING GIST (main_type, geog);
-CREATE INDEX places_geog_only_gix ON places USING GIST (geog); -- For KNN search
+CREATE INDEX IF NOT EXISTS places_type_geog_gix ON places USING GIST (main_type, geog);
+CREATE INDEX IF NOT EXISTS places_geog_only_gix ON places USING GIST (geog); -- For KNN search
 
-CREATE TABLE reviews (
+CREATE TABLE IF NOT EXISTS reviews (
     place_id          TEXT NOT NULL REFERENCES places(place_id) ON DELETE CASCADE,
     name              TEXT NOT NULL,         -- API "name": "places/.../reviews/..."
     rating            INTEGER,
@@ -38,7 +40,7 @@ CREATE TABLE reviews (
     PRIMARY KEY (place_id, name)
 );
 
-CREATE TABLE photos (
+CREATE TABLE IF NOT EXISTS photos (
     place_id             TEXT NOT NULL REFERENCES places(place_id) ON DELETE CASCADE,
     name                 TEXT NOT NULL,      -- API "name", the photo reference
     width_px             INTEGER,
@@ -47,5 +49,19 @@ CREATE TABLE photos (
     google_maps_uri      TEXT,
     flag_content_uri     TEXT,
     raw                  JSONB NOT NULL,
+    bucket_key           TEXT,                                       -- NULL = not yet scraped to R2
+    is_preview           BOOLEAN NOT NULL DEFAULT FALSE,             -- exactly one TRUE per place_id
     PRIMARY KEY (place_id, name)
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS photos_one_preview_per_place
+    ON photos (place_id) WHERE is_preview;
+
+CREATE VIEW IF NOT EXISTS places_with_preview AS
+SELECT
+    p.*,
+    ph.bucket_key AS preview_photo
+FROM places p
+LEFT JOIN photos ph
+       ON ph.place_id = p.place_id
+      AND ph.is_preview;

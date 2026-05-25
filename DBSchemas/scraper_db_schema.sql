@@ -1,4 +1,4 @@
-CREATE TABLE scrape_queue (
+CREATE TABLE IF NOT EXISTS scrape_queue (
     id              SERIAL PRIMARY KEY,
     place_id        TEXT NOT NULL UNIQUE,
     website         TEXT NOT NULL,
@@ -8,7 +8,7 @@ CREATE TABLE scrape_queue (
     last_attempt_at TIMESTAMPTZ                  -- temporary, drop after debugging
 );
 
-CREATE TABLE success (
+CREATE TABLE IF NOT EXISTS success (
     place_id      TEXT NOT NULL,
     website       TEXT NOT NULL,
     scraped_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -18,7 +18,7 @@ CREATE TABLE success (
     PRIMARY KEY (place_id, website)
 );
 
-CREATE TABLE error (
+CREATE TABLE IF NOT EXISTS error (
     place_id   TEXT NOT NULL,
     website    TEXT NOT NULL,
     attempts   INTEGER NOT NULL,
@@ -27,7 +27,7 @@ CREATE TABLE error (
     PRIMARY KEY (place_id, website)
 );
 
-CREATE TABLE attempt_log (
+CREATE TABLE IF NOT EXISTS attempt_log (
     log_id      BIGSERIAL PRIMARY KEY,
     place_id    TEXT NOT NULL,
     attempt_no  INTEGER NOT NULL,                -- 1, 2, 3 for this place
@@ -37,11 +37,11 @@ CREATE TABLE attempt_log (
     outcome     TEXT NOT NULL DEFAULT 'unknown', -- 'success' | 'error' | 'unknown'
     reason      TEXT NOT NULL DEFAULT 'scraper did not update the log'
 );
-CREATE INDEX idx_attempt_log_place_id ON attempt_log(place_id);
+CREATE INDEX IF NOT EXISTS idx_attempt_log_place_id ON attempt_log(place_id);
 
-CREATE TABLE link_extractor_state (
+CREATE TABLE IF NOT EXISTS extractor_state (
     id                    SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
     last_scanned_at       TIMESTAMPTZ NOT NULL DEFAULT 'epoch',
     last_emails_synced_at TIMESTAMPTZ NOT NULL DEFAULT 'epoch'
 );
-INSERT INTO link_extractor_state (id) VALUES (1) ON CONFLICT DO NOTHING;
+INSERT INTO extractor_state (id) VALUES (1) ON CONFLICT DO NOTHING;
