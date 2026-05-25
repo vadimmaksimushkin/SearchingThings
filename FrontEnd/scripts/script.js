@@ -4,6 +4,38 @@ const API_BASE = (location.hostname === 'localhost' || location.hostname === '12
   ? 'http://localhost:8000'
   : '/api';
 
+const LANG = 'en';
+const SHOW_DEBUG = false;
+
+const TYPE_ALIASES = {
+  gym: ['gym', 'gimnasio'],
+  shopping_mall: ['shoppingmall', 'centrocomercial'],
+};
+const TYPE_DISPLAY = {
+  en: {gym: 'Gym', shopping_mall: 'Shopping Mall'},
+  es: {gym: 'Gimnasio', shopping_mall: 'Centro Comercial'},
+};
+
+function normalizeTypeInput(s) {
+  return s
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/[\s/\\]/g, '');
+}
+
+function canonicalType(input) {
+  const n = normalizeTypeInput(input);
+  for (const [type, aliases] of Object.entries(TYPE_ALIASES)) {
+    if (aliases.includes(n)) return type;
+  }
+  return null;
+}
+
+function displayType(type) {
+  return TYPE_DISPLAY[LANG]?.[type] ?? type;
+}
+
 
 async function init() {
   const [{AdvancedMarkerElement, PinElement}, {InfoWindow}] =
@@ -33,9 +65,12 @@ async function init() {
   const includePhotosInput = document.getElementById('include-photos-input');
   const searchBtn = document.getElementById('search-btn');
   const clearBtn = document.getElementById('clear-btn');
-  const debug = document.getElementById('debug');
-  const debug2 = document.getElementById('debug2');
+  const debug = SHOW_DEBUG ? document.getElementById('debug') : {textContent: ''};
+  const debug2 = SHOW_DEBUG ? document.getElementById('debug2') : {textContent: ''};
   const placesList = document.getElementById('places-list');
+  if (!SHOW_DEBUG) {
+    document.getElementById('debug-section').hidden = true;
+  }
 
   const userPin = new PinElement({
     background: '#1a73e8',
@@ -72,7 +107,7 @@ async function init() {
     //   infoWindow.open({map: innerMap, anchor: entry.marker});
     //   return;
     // }
-    const detail = {...entry?.place, reviews: entry?.reviews, photos: entry?.photos};
+    const detail = {...entry?.place, reviews: entry?.reviews, photos: entry?.photos, displayLabel: entry?.displayLabel};
     infoWindow.setContent(buildPlaceCard(detail));
     infoWindow.open({map: innerMap, anchor: entry.marker});
   // // Fall back to /place/{id} fetch.
@@ -87,7 +122,7 @@ async function init() {
   //   }
   }
 
-  async function upsertMarker(place, enriched, counter, yieldEvery) {
+  async function upsertMarker(place, enriched, counter, typeLabel, yieldEvery) {
     const existing = placeStore.get(place.place_id);
     if (existing) {
       existing.place = place;
@@ -100,10 +135,11 @@ async function init() {
       title: place.name,
       gmpClickable: true,
     });
-    placeStore.set(place.place_id, {place, marker, reviews: [], photos: [], enriched});
+    counter.n += 1;
+    const displayLabel = `${typeLabel} ${counter.n}`;
+    placeStore.set(place.place_id, {place, marker, reviews: [], photos: [], enriched, displayLabel});
     marker.addListener('gmp-click', () => onMarkerClick(place.place_id));
     resultMarkers.push(marker);
-    counter.n += 1;
     if (counter.n % yieldEvery === 0) {
       debug.textContent = `received: ${counter.n}`;
       await new Promise((r) => setTimeout(r, 0));
@@ -114,7 +150,7 @@ async function init() {
   function renderListEntry(place_id) {
     const entry = placeStore.get(place_id);
     if (!entry) return;
-    const detail = {...entry.place, reviews: entry.reviews, photos: entry.photos};
+    const detail = {...entry.place, reviews: entry.reviews, photos: entry.photos, displayLabel: entry.displayLabel};
     const card = buildPlaceCard(detail);
     if (entry.listEntry) {
       entry.listEntry.replaceChildren(card);
@@ -143,7 +179,10 @@ async function init() {
     const radius = Number(radiusInput.value);
     const is_rectangle = isRectangle.checked;
     const max_results = Number(maxResultsInput.value);
-    const main_type = typeInput.value.trim();
+    const typedType = typeInput.value.trim();
+    const canonical = canonicalType(typedType);
+    const main_type = canonical ?? typedType;
+    const typeLabel = canonical ? displayType(canonical) : typedType;
     const local_only = localOnlyInput.checked;
     const include_reviews = includeReviewsInput.checked;
     const include_photos = includePhotosInput.checked;
@@ -192,7 +231,7 @@ async function init() {
         const event = JSON.parse(rawLine);
         debug2.textContent += JSON.stringify(event, null, 2) + '\n';
         if (event.type === 'place_preview' || event.type === 'place_update') {
-          await upsertMarker(event.place, enriched, counter, YIELD_EVERY);
+          await upsertMarker(event.place, enriched, counter, typeLabel, YIELD_EVERY);
           renderListEntry(event.place.place_id);
         } else if (event.type === 'reviews') {
           const entry = placeStore.get(event.place_id);
@@ -226,6 +265,8 @@ async function init() {
     placeStore.clear();
     infoWindow.close();
     userMarker.position = {lat: cdmx_center_lat, lng: cdmx_center_lon};
+    lonInput.value = cdmx_center_lon;
+    latInput.value = cdmx_center_lat;
     debug.textContent = '';
     debug2.textContent = '';
     placesList.replaceChildren();
@@ -300,6 +341,13 @@ async function* readNdjson(response) {
 
 function buildPlaceCard(place) {
   const card = document.createElement('div');
+
+  if (place.displayLabel) {
+    const label = document.createElement('div');
+    label.className = 'place-label';
+    label.textContent = place.displayLabel;
+    card.appendChild(label);
+  }
 
   if (place.preview_photo) {
     const img = document.createElement('img');
