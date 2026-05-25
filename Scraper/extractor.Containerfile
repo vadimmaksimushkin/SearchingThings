@@ -6,6 +6,6 @@ COPY Scraper/requirements-extractor.txt /app/
 RUN pip install --no-cache-dir -r requirements-extractor.txt
 
 COPY credentials.py /app/
-COPY Scraper/__init__.py Scraper/link_extractor.py /app/Scraper/
+COPY Scraper/__init__.py Scraper/extractor.py /app/Scraper/
 
-ENTRYPOINT ["python", "-u", "Scraper/link_extractor.py"]
+ENTRYPOINT ["python", "-u", "Scraper/extractor.py"]
