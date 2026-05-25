@@ -3,12 +3,13 @@
 # Usage:
 #   ./install.sh places
 #   ./install.sh queue
+#   ./install.sh image
 #
 set -euo pipefail
 
 HOST_TYPE="${1:-}"
-if [[ "$HOST_TYPE" != "places" && "$HOST_TYPE" != "queue" ]]; then
-    echo "Usage: $0 places|queue" >&2
+if [[ "$HOST_TYPE" != "places" && "$HOST_TYPE" != "queue" && "$HOST_TYPE" != "image" ]]; then
+    echo "Usage: $0 places|queue|image" >&2
     exit 1
 fi
 

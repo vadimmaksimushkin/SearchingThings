@@ -1,22 +1,22 @@
 services:
-  pg_queue:
+  pg_image_queue:
     image: docker.io/library/postgres:18-alpine
-    container_name: pg_queue
+    container_name: pg_image_queue
     restart: unless-stopped
     mem_limit: 350m
     memswap_limit: 350m
     oom_score_adj: -500
     environment:
-      POSTGRES_DB: queue
+      POSTGRES_DB: image_queue
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
       - "5432:5432"
     volumes:
-      - pg_queue_data:/var/lib/postgresql
-      # - ../../DBSchemas/scraper_db_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro,Z
+      - pg_image_queue_data:/var/lib/postgresql
+      # - ../../DBSchemas/003_image_queue_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro,Z
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d queue"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d image_queue"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -39,26 +39,32 @@ services:
       - "-c"
       - "autovacuum_vacuum_scale_factor=0.05"
 
-  scraper:
+  image_scraper:
     build:
       context: ../..
-      dockerfile: Scraper/scraper.Containerfile
-    image: scraper:local
-    container_name: scraper
+      dockerfile: Scraper/image_scraper.Containerfile
+    image: image_scraper:local
+    container_name: image_scraper
     restart: unless-stopped
-    mem_limit: 1700m
-    memswap_limit: 1700m
+    init: true
+    mem_limit: 800m
+    memswap_limit: 800m
     environment:
       GOOGLE_MAPS_API_KEY: ""
-      PLACES_DB_URL: ${PLACES_DB_URL}
-      QUEUE_DB_URL: postgresql://postgres:${POSTGRES_PASSWORD}@pg_queue:5432/queue
+      PLACES_DB_URL: ""
+      QUEUE_DB_URL: ""
+      IMAGE_QUEUE_DB_URL: postgresql://postgres:${POSTGRES_PASSWORD}@pg_image_queue:5432/image_queue
+      R2_USER_TOKEN: ${R2_USER_TOKEN}
+      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID}
+      R2_ACCESS_KEY: ${R2_ACCESS_KEY}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY}
+      R2_BUCKET: ${R2_BUCKET}
+      R2_PUBLIC_URL: ${R2_PUBLIC_URL}
     depends_on:
-      pg_queue:
+      pg_image_queue:
         condition: service_healthy
     command:
-      - "--workers=3"
-      - "--max-attempts=3"
       - "--poll-interval=1.0"
 
 volumes:
-  pg_queue_data:
+  pg_image_queue_data:

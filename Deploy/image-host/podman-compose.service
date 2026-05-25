@@ -1,12 +1,12 @@
 [Unit]
-Description=places-host podman-compose stack (pg_places + pg_image_queue + extractor + searchapi + image_scraper + caddy)
+Description=image-host podman-compose stack (pg_image_queue + image_scraper)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-WorkingDirectory=/home/ec2-user/ScrapingShoppingMalls/Deploy/places-host
+WorkingDirectory=/home/ec2-user/ScrapingShoppingMalls/Deploy/image-host
 ExecStart=/usr/local/bin/podman-compose up -d
 ExecStop=/usr/local/bin/podman-compose down
 TimeoutStartSec=600
