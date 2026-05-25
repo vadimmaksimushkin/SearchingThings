@@ -83,20 +83,8 @@ async function init() {
     title: 'Search location',
     content: userPin.element,
   });
-  let resultMarkers = [];
   const placeStore = new Map();
-
-  async function clearMarkers(markers) {
-    const YIELD_EVERY = 30;
-    let i = 0;
-    for (const m of markers) {
-      m.map = null;
-      i += 1;
-      if (i % YIELD_EVERY === 0) {
-        await new Promise((r) => setTimeout(r, 0));
-      }
-    }
-  }
+  const clusterer = new markerClusterer.MarkerClusterer({map: innerMap});
 
   async function onMarkerClick(place_id) {
     const entry = placeStore.get(place_id);
@@ -130,7 +118,6 @@ async function init() {
       return false;
     }
     const marker = new AdvancedMarkerElement({
-      map: innerMap,
       position: {lat: place.latitude, lng: place.longitude},
       title: place.name,
       gmpClickable: true,
@@ -139,9 +126,10 @@ async function init() {
     const displayLabel = `${typeLabel} ${counter.n}`;
     placeStore.set(place.place_id, {place, marker, reviews: [], photos: [], enriched, displayLabel});
     marker.addListener('gmp-click', () => onMarkerClick(place.place_id));
-    resultMarkers.push(marker);
+    clusterer.addMarker(marker, true);
     if (counter.n % yieldEvery === 0) {
       debug.textContent = `received: ${counter.n}`;
+      clusterer.render();
       await new Promise((r) => setTimeout(r, 0));
     }
     return true;
@@ -189,8 +177,7 @@ async function init() {
 
     userMarker.position = {lat, lng: lon};
 
-    await clearMarkers(resultMarkers);
-    resultMarkers = [];
+    clusterer.clearMarkers();
     placeStore.clear();
 
     debug.textContent = '';
@@ -246,6 +233,7 @@ async function init() {
             renderListEntry(event.place_id);
           }
         } else if (event.type === 'done') {
+          clusterer.render();
           debug.textContent = `done (total: ${counter.n})`;
         } else if (event.type === 'error') {
           debug.textContent += `\nstream error: ${event.message}`;
@@ -260,8 +248,7 @@ async function init() {
     }
   });
   clearBtn.addEventListener('click', async () => {
-    await clearMarkers(resultMarkers);
-    resultMarkers = [];
+    clusterer.clearMarkers();
     placeStore.clear();
     infoWindow.close();
     userMarker.position = {lat: cdmx_center_lat, lng: cdmx_center_lon};
