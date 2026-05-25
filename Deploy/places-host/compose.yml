@@ -116,7 +116,7 @@ services:
       PLACES_DB_URL: postgresql://postgres:${POSTGRES_PASSWORD}@pg_places:5432/places
       QUEUE_DB_URL: ${QUEUE_DB_URL}
       # IMAGE_QUEUE_DB_URL: postgresql://postgres:${POSTGRES_PASSWORD}@pg_image_queue:5432/image_queue
-      IMAGE_QUEUE_DB_URL: ""
+      IMAGE_QUEUE_DB_URL: ${IMAGE_QUEUE_DB_URL}
       R2_USER_TOKEN: ""
       R2_ACCOUNT_ID: ""
       R2_ACCESS_KEY: ""
