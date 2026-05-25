@@ -354,6 +354,8 @@ function buildPlaceCard(place) {
     img.src = place.preview_photo;
     img.alt = '';
     img.className = 'preview-photo';
+    img.loading = 'lazy';
+    img.decoding = 'async';
     card.appendChild(img);
   }
 

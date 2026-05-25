@@ -13,10 +13,10 @@
   <body>
     <h1>Map test</h1>
 
-    <label>Lat: <input id="lat-input" type="number" step="any" value="19.416654"/></label>
-    <label>Lon: <input id="lon-input" type="number" step="any" value="-99.137536"/></label>
+    <label>Lat: <input id="lat-input" type="number" step="any" value="19.416654" min="-90" max="90"/></label>
+    <label>Lon: <input id="lon-input" type="number" step="any" value="-99.137536" min="-180" max="180"/></label>
     <br/>
-    <label>Radius: <input id="radius-input" type="number" min="1" step="100" value="500"/></label> <!-- in meters -->
+    <label>Radius: <input id="radius-input" type="number" min="1" max="50000" step="100" value="500"/></label> <!-- in meters -->
     <label>Max results: <input id="max-results-input" type="number" min="1" max="2000" step="10" value="20"/></label>
     <label><input id="location-is-rectangle-input" type="checkbox"/>Location rectangle type (no for circle type)</label>
     <br/>
@@ -30,7 +30,7 @@
     <button id="clear-btn">Clear</button>
     <gmp-map center="19.416654, -99.137536" zoom="12" map-id="DEMO_MAP_ID"></gmp-map>
     <h3>Places</h3>
-    <div id="places-list"></div>
+    <section id="places-list"></section>
     <section id="debug-section">
       <h3>Debug</h3>
       <pre id="debug"></pre>
