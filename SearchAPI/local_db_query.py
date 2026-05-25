@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from typing import Any, Literal
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from credentials import PLACES_DB_URL
+from credentials import PLACES_DB_URL, R2_PUBLIC_URL
 from SearchAPI.models import Photo, Place, PlaceDetail, Review
 from SearchAPI.google_fetch import Location, parse_published_at
 
@@ -14,7 +14,7 @@ PLACE_COLUMNS = (
     "place_id, main_type, name, address, phone, website, "
     "rating, rating_count, "
     "ST_Y(geog::geometry) AS latitude, ST_X(geog::geometry) AS longitude, "
-    "plus_code, category, emails"
+    "plus_code, category, emails, preview_photo"
 )
 
 ORDER_BY_RATING = """
@@ -26,7 +26,7 @@ ORDER_BY_RATING = """
 
 QUERY_RECTANGLE_ORDER_BY_RATING = f"""
     SELECT {PLACE_COLUMNS}
-    FROM places
+    FROM places_with_preview
     WHERE main_type = $1
         AND geog && ST_MakeEnvelope($2, $3, $4, $5, 4326)::geography
     ORDER BY {ORDER_BY_RATING}
@@ -34,7 +34,7 @@ QUERY_RECTANGLE_ORDER_BY_RATING = f"""
 """
 QUERY_RECTANGLE_ORDER_BY_LOCATION = f"""
     SELECT {PLACE_COLUMNS}
-    FROM places
+    FROM places_with_preview
     WHERE main_type = $1
         AND geog && ST_MakeEnvelope($2, $3, $4, $5, 4326)::geography
     ORDER BY geog <-> ST_MakePoint($6, $7)::geography ASC
@@ -43,7 +43,7 @@ QUERY_RECTANGLE_ORDER_BY_LOCATION = f"""
 
 QUERY_CIRCLE_ORDER_BY_RATING = f"""
     SELECT {PLACE_COLUMNS}
-    FROM places
+    FROM places_with_preview
     WHERE main_type = $1
         AND ST_DWithin(geog, ST_MakePoint($2, $3)::geography, $4)
     ORDER BY {ORDER_BY_RATING}
@@ -51,7 +51,7 @@ QUERY_CIRCLE_ORDER_BY_RATING = f"""
 """
 QUERY_CIRCLE_ORDER_BY_LOCATION = f"""
     SELECT {PLACE_COLUMNS}
-    FROM places
+    FROM places_with_preview
     WHERE main_type = $1
         AND ST_DWithin(geog, ST_MakePoint($2, $3)::geography, $4)
     ORDER BY geog <-> ST_MakePoint($2, $3)::geography ASC
@@ -66,7 +66,15 @@ REVIEW_COLUMNS = (
 
 PHOTO_COLUMNS = "name, width_px, height_px, google_maps_uri, flag_content_uri"
 
-PLACE_QUERY = f"SELECT {PLACE_COLUMNS} FROM places WHERE place_id = $1"
+PLACE_QUERY = f"SELECT {PLACE_COLUMNS} FROM places_with_preview WHERE place_id = $1"
+
+
+def add_preview_link_to_place(row_dict: dict[str, Any]) -> dict[str, Any]:
+    """Convert preview_photo from a bucket_key into a full R2 HTTPS URL"""
+    bucket_key = row_dict.get("preview_photo")
+    if bucket_key:
+        row_dict["preview_photo"] = f"{R2_PUBLIC_URL}/{bucket_key}"
+    return row_dict
 
 REVIEWS_QUERY = f"""
     SELECT {REVIEW_COLUMNS}
@@ -137,8 +145,8 @@ ON CONFLICT (place_id, name) DO UPDATE SET
 UPSERT_PHOTO_SQL = """
 INSERT INTO photos (
     place_id, name, width_px, height_px,
-    author_attributions, google_maps_uri, flag_content_uri, raw
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    author_attributions, google_maps_uri, flag_content_uri, raw, is_preview
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 ON CONFLICT (place_id, name) DO UPDATE SET
     width_px            = EXCLUDED.width_px,
     height_px           = EXCLUDED.height_px,
@@ -197,7 +205,7 @@ async def find_places_rectangle(
                 main_type, sw_lon, sw_lat, ne_lon, ne_lat,
                 center_lon, center_lat, max_results, # type: ignore
             )
-    return [Place(**dict(row)) for row in rows]
+    return [Place(**add_preview_link_to_place(dict(row))) for row in rows]
 
 
 async def find_places_circle(
@@ -218,7 +226,7 @@ async def find_places_circle(
             query,
             main_type, center_lon, center_lat, radius, max_results,
         )
-    return [Place(**dict(row)) for row in rows]
+    return [Place(**add_preview_link_to_place(dict(row))) for row in rows]
 
 
 async def fetch_place_detail(pool: asyncpg.Pool, place_id: str) -> PlaceDetail | None:
@@ -230,7 +238,7 @@ async def fetch_place_detail(pool: asyncpg.Pool, place_id: str) -> PlaceDetail |
         photo_rows = await conn.fetch(PHOTOS_QUERY, place_id)
 
     return PlaceDetail(
-        **dict(place_row),
+        **add_preview_link_to_place(dict(place_row)),
         reviews=[Review(**dict(row)) for row in review_rows],
         photos=[Photo(**dict(row)) for row in photo_rows],
     )
@@ -327,7 +335,8 @@ async def upsert_photos(
     # conn: asyncpg.Connection,
     place_id: str,
     photos: list[dict[str, Any]] | None) -> None:
-    """Insert new  photos"""
+    """Insert new photos.
+    The first photo in the batch is marked is_preview=TRUE"""
     if not photos:
         return
     rows = [
@@ -340,8 +349,9 @@ async def upsert_photos(
             photo.get("googleMapsUri"),
             photo.get("flagContentUri"),
             photo, # store original raw JSONB
+            i == 0,
         )
-        for photo in photos
+        for i, photo in enumerate(photos)
     ]
     await conn.executemany(UPSERT_PHOTO_SQL, rows)
 
