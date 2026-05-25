@@ -6,14 +6,11 @@ gmp-map {
 .place-card {
   border-bottom: 1px solid #000000;
   padding: 8px 0;
+  content-visibility: auto;
+  contain-intrinsic-size: 0 200px;
 }
 
 .preview-photo {
   display: block;
-  max-width: 200px;
-}
-
-.gm-style-iw .preview-photo {
-  max-width: 100%;
-  height: auto;
+  max-width: 20vw;
 }

@@ -96,7 +96,25 @@ async function init() {
     //   return;
     // }
     const detail = {...entry?.place, reviews: entry?.reviews, photos: entry?.photos, displayLabel: entry?.displayLabel};
-    infoWindow.setContent(buildPlaceCard(detail));
+    const card = buildPlaceCard(detail);
+    Object.assign(card.style, {
+      width: 'max(200px, 30vw)',
+      fontSize: 'clamp(12px, 1.1vw, 20px)',
+      lineHeight: '1.4',
+    });
+    const photo = card.querySelector('.preview-photo');
+    if (photo) Object.assign(photo.style, {width: '100%', maxWidth: '100%', height: 'auto'});
+    const name = card.querySelector('strong');
+    const headerDiv = name?.parentElement;
+    if (headerDiv) {
+      headerDiv.remove();
+      Object.assign(headerDiv.style, {whiteSpace: 'normal', overflowWrap: 'anywhere'});
+      name.style.fontSize = 'clamp(13px, 1.3vw, 17px)';
+      infoWindow.setHeaderContent(headerDiv);
+    } else {
+      infoWindow.setHeaderContent(null);
+    }
+    infoWindow.setContent(card);
     infoWindow.open({map: innerMap, anchor: entry.marker});
   // // Fall back to /place/{id} fetch.
   //   const anchor = entry?.marker;
