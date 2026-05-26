@@ -277,28 +277,33 @@ async function init() {
         max_results}, localOnly=${local_only}, includeReviews=${
         include_reviews}, includePhotos=${include_photos}\n`
     try {
+      const YIELD_EVERY = 30;
+      const enriched = include_reviews || include_photos;
+      const counter = {n: 0};
+      const t0 = performance.now();
       const rawLines = await searchByLocationStream({
         main_type, lat, lon, radius, is_rectangle, local_only,
         include_reviews, include_photos, max_results,
       });
-      const YIELD_EVERY = 30;
-      const enriched = include_reviews || include_photos;
-      const counter = {n: 0};
       for await (const rawLine of rawLines) {
+        const dt = performance.now() - t0;
         const event = JSON.parse(rawLine);
         debug2.textContent += JSON.stringify(event, null, 2) + '\n';
         if (event.type === 'place_preview' || event.type === 'place_update') {
+          event.place.query_time = dt;
           await upsertMarker(event.place, enriched, counter, typeLabel, YIELD_EVERY);
           renderListEntry(event.place.place_id);
         } else if (event.type === 'reviews') {
           const entry = placeStore.get(event.place_id);
           if (entry) {
+            entry.place.query_time = dt;
             entry.reviews.push(...event.items);
             renderListEntry(event.place_id);
           }
         } else if (event.type === 'photos') {
           const entry = placeStore.get(event.place_id);
           if (entry) {
+            entry.place.query_time = dt;
             entry.photos.push(...event.items);
             renderListEntry(event.place_id);
           }

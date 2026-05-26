@@ -5,6 +5,11 @@ export function buildPlaceRow(place) {
   row.className = 'place-card';
   if (place.place_id) row.dataset.placeId = place.place_id;
 
+  const queryTimeCell = document.createElement('div');
+  const queryTime = place.query_time ?? -1234;
+  queryTimeCell.textContent = String(queryTime);
+  row.appendChild(queryTimeCell);
+
   const typeCell = document.createElement('div');
   if (place.displayLabel) typeCell.textContent = place.displayLabel;
   row.appendChild(typeCell);

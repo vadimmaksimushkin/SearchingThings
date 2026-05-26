@@ -5,7 +5,7 @@ gmp-map {
 
 #places-list {
   display: grid;
-  grid-template-columns: 7vw 16vw 5vw 6vw 14vw 14vw 8vw 25vw;
+  grid-template-columns: 6vw 7vw 16vw 5vw 6vw 14vw 14vw 8vw 19vw;
 }
 
 .header-clickable {
