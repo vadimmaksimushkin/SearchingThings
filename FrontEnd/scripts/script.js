@@ -265,6 +265,15 @@ async function init() {
     filterState.hideBlankPhones = false;
     applySortAndFilter();
   });
+  placesList.addEventListener('click', (e) => {
+    const nameCell = e.target.closest('.name-cell');
+    if (!nameCell) return;
+    const row = nameCell.closest('.place-card');
+    const placeId = row?.dataset.placeId;
+    if (!placeId) return;
+    onMarkerClick(placeId);
+    mapElement.scrollIntoView({behavior: 'smooth', block: 'start'});
+  });
   updateHeaderUI();
 
   function renderListEntry(place_id) {
@@ -459,12 +468,14 @@ async function* readNdjson(response) {
 function buildPlaceRow(place) {
   const row = document.createElement('div');
   row.className = 'place-card';
+  if (place.place_id) row.dataset.placeId = place.place_id;
 
   const typeCell = document.createElement('div');
   if (place.displayLabel) typeCell.textContent = place.displayLabel;
   row.appendChild(typeCell);
 
   const nameCell = document.createElement('div');
+  nameCell.className = 'name-cell';
   const nameStrong = document.createElement('strong');
   nameStrong.textContent = place.name ?? '';
   nameCell.appendChild(nameStrong);

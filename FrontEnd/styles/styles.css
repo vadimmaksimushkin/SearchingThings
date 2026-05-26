@@ -17,6 +17,14 @@ gmp-map {
   background-color: #f0f0f0;
 }
 
+.name-cell {
+  cursor: pointer;
+}
+
+.name-cell:hover strong {
+  text-decoration: underline;
+}
+
 #reset-view-btn {
   margin-bottom: 6px;
 }
