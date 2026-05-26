@@ -3,7 +3,20 @@
 }
 
 {$DOMAIN}, www.{$DOMAIN} {
-	encode gzip
+	encode {
+		zstd
+		gzip
+		match {
+			header Content-Type text/*
+			header Content-Type application/json*
+			header Content-Type application/x-ndjson*
+			header Content-Type application/javascript*
+			header Content-Type application/xml*
+			header Content-Type application/atom+xml*
+			header Content-Type application/rss+xml*
+			header Content-Type image/svg+xml*
+		}
+	}
 
 	handle_path /api/* {
 		reverse_proxy searchapi:8000
