@@ -1,41 +1,8 @@
 'use strict';
 
-const API_BASE = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
-  ? 'http://localhost:8000'
-  : '/api';
-
-const LANG = 'en';
-const SHOW_DEBUG = false;
-
-const TYPE_ALIASES = {
-  gym: ['gym', 'gimnasio'],
-  shopping_mall: ['shoppingmall', 'centrocomercial'],
-};
-const TYPE_DISPLAY = {
-  en: {gym: 'Gym', shopping_mall: 'Shopping Mall'},
-  es: {gym: 'Gimnasio', shopping_mall: 'Centro Comercial'},
-};
-
-function normalizeTypeInput(s) {
-  return s
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .toLowerCase()
-      .replace(/[\s/\\]/g, '');
-}
-
-function canonicalType(input) {
-  const n = normalizeTypeInput(input);
-  for (const [type, aliases] of Object.entries(TYPE_ALIASES)) {
-    if (aliases.includes(n)) return type;
-  }
-  return null;
-}
-
-function displayType(type) {
-  return TYPE_DISPLAY[LANG]?.[type] ?? type;
-}
-
+import {SHOW_DEBUG, canonicalType, displayType} from './config.js';
+import {searchByLocationStream} from './api.js';
+import {buildPlaceRow, buildPlaceCard} from './render.js';
 
 async function init() {
   const [{AdvancedMarkerElement, PinElement}, {InfoWindow}] =
@@ -88,13 +55,6 @@ async function init() {
 
   async function onMarkerClick(place_id) {
     const entry = placeStore.get(place_id);
-    // if (entry?.enriched) {
-    //   // Stream provided reviews/photos (or place has none of those); trust the store.
-    //   const detail = {...entry.place, reviews: entry.reviews, photos: entry.photos};
-    //   infoWindow.setContent(buildPlaceCard(detail));
-    //   infoWindow.open({map: innerMap, anchor: entry.marker});
-    //   return;
-    // }
     const detail = {...entry?.place, reviews: entry?.reviews, photos: entry?.photos, displayLabel: entry?.displayLabel};
     const card = buildPlaceCard(detail);
     Object.assign(card.style, {
@@ -116,16 +76,6 @@ async function init() {
     }
     infoWindow.setContent(card);
     infoWindow.open({map: innerMap, anchor: entry.marker});
-  // // Fall back to /place/{id} fetch.
-  //   const anchor = entry?.marker;
-  //   infoWindow.setContent('Loading…');
-  //   infoWindow.open({map: innerMap, anchor});
-  //   try {
-  //     const detail = await getPlaceDetail(place_id);
-  //     infoWindow.setContent(buildPlaceCard(detail));
-  //   } catch (err) {
-  //     infoWindow.setContent(`Error loading place: ${err.message}`);
-  //   }
   }
 
   async function upsertMarker(place, enriched, counter, typeLabel, yieldEvery) {
@@ -327,25 +277,6 @@ async function init() {
         max_results}, localOnly=${local_only}, includeReviews=${
         include_reviews}, includePhotos=${include_photos}\n`
     try {
-      // const results = await searchByLocation( main_type, lat,
-      // lon, radius, is_rectangle, local_only, max_results); debug.textContent +=
-      // `results count: ${results?.length}\n`; debug.textContent +=
-      // JSON.stringify(results, null, 2);
-
-      // for (const place of results) {
-      //   const marker = new AdvancedMarkerElement({
-      //     map: innerMap,
-      //     position: {lat: place.latitude, lng: place.longitude},
-      //     title: place.name,
-      //     gmpClickable: true,
-      //   });
-      //   marker.addListener('gmp-click', () => {
-      //     infoWindow.setContent(buildPlaceCard(place));
-      //     infoWindow.open({map: innerMap, anchor: marker});
-      //   });
-      //   resultMarkers.push(marker);
-      // }
-
       const rawLines = await searchByLocationStream({
         main_type, lat, lon, radius, is_rectangle, local_only,
         include_reviews, include_photos, max_results,
@@ -397,258 +328,6 @@ async function init() {
     debug2.textContent = '';
     clearPlacesList();
   });
-}
-
-async function searchByLocation(
-    main_type, lat, lon, radius, is_rectangle, local_only, max_results) {
-  const params = new URLSearchParams({
-    main_type,
-    lat: String(lat),
-    lon: String(lon),
-    radius: String(radius),
-    is_rectangle: String(is_rectangle),
-    local_only: String(local_only),
-    max_results: String(max_results),
-  });
-  const response = await fetch(`${API_BASE}/searchByLocation?${params}`);
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${await response.text()}`);
-  }
-  return response.json();
-}
-
-async function getPlaceDetail(place_id) {
-  const response = await fetch(`${API_BASE}/place/${encodeURIComponent(place_id)}`);
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${await response.text()}`);
-  }
-  return response.json();
-}
-
-async function searchByLocationStream(opts) {
-  const params = new URLSearchParams({
-    main_type: opts.main_type,
-    lat: String(opts.lat),
-    lon: String(opts.lon),
-    radius: String(opts.radius),
-    is_rectangle: String(opts.is_rectangle),
-    local_only: String(opts.local_only),
-    include_reviews: String(opts.include_reviews),
-    include_photos: String(opts.include_photos),
-    max_results: String(opts.max_results),
-  });
-  const response = await fetch(`${API_BASE}/searchStream?${params}`);
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${await response.text()}`);
-  }
-  return readNdjson(response);
-}
-
-async function* readNdjson(response) {
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = '';
-  while (true) {
-    const {value, done} = await reader.read();
-    if (done) {
-      const tail = buf.trim();
-      if (tail) yield tail;
-      return;
-    }
-    buf += decoder.decode(value, {stream: true});
-    let nl;
-    while ((nl = buf.indexOf('\n')) >= 0) {
-      const line = buf.slice(0, nl);
-      buf = buf.slice(nl + 1);
-      if (line) yield line;
-    }
-  }
-}
-
-function buildPlaceRow(place) {
-  const row = document.createElement('div');
-  row.className = 'place-card';
-  if (place.place_id) row.dataset.placeId = place.place_id;
-
-  const typeCell = document.createElement('div');
-  if (place.displayLabel) typeCell.textContent = place.displayLabel;
-  row.appendChild(typeCell);
-
-  const nameCell = document.createElement('div');
-  nameCell.className = 'name-cell';
-  const nameStrong = document.createElement('strong');
-  nameStrong.textContent = place.name ?? '';
-  nameCell.appendChild(nameStrong);
-  row.appendChild(nameCell);
-
-  const ratingCell = document.createElement('div');
-  if (place.rating != null) {
-    ratingCell.textContent = `★ ${place.rating.toFixed(1)}`;
-  }
-  row.appendChild(ratingCell);
-
-  const ratingCountCell = document.createElement('div');
-  if (place.rating_count != null) {
-    ratingCountCell.textContent = String(place.rating_count);
-  }
-  row.appendChild(ratingCountCell);
-
-  const websiteCell = document.createElement('div');
-  if (place.website) {
-    const a = document.createElement('a');
-    a.href = place.website;
-    a.textContent = place.website;
-    a.target = '_blank';
-    a.rel = 'noopener noreferrer';
-    websiteCell.appendChild(a);
-  }
-  row.appendChild(websiteCell);
-
-  const emailsCell = document.createElement('div');
-  if (place.emails?.length) {
-    place.emails.forEach((email, i) => {
-      if (i > 0) emailsCell.appendChild(document.createTextNode(', '));
-      const a = document.createElement('a');
-      a.href = `mailto:${email}`;
-      a.textContent = email;
-      emailsCell.appendChild(a);
-    });
-  }
-  row.appendChild(emailsCell);
-
-  const phoneCell = document.createElement('div');
-  if (place.phone) {
-    const a = document.createElement('a');
-    a.href = `tel:${place.phone}`;
-    a.textContent = place.phone;
-    phoneCell.appendChild(a);
-  }
-  row.appendChild(phoneCell);
-
-  const previewCell = document.createElement('div');
-  if (place.preview_photo) {
-    const img = document.createElement('img');
-    img.src = place.preview_photo;
-    img.alt = '';
-    img.className = 'preview-photo';
-    img.loading = 'lazy';
-    img.decoding = 'async';
-    previewCell.appendChild(img);
-  }
-  row.appendChild(previewCell);
-
-  return row;
-}
-
-function buildPlaceCard(place) {
-  const card = document.createElement('div');
-
-  if (place.displayLabel) {
-    const label = document.createElement('div');
-    label.className = 'place-label';
-    label.textContent = place.displayLabel;
-    card.appendChild(label);
-  }
-
-  if (place.preview_photo) {
-    const img = document.createElement('img');
-    img.src = place.preview_photo;
-    img.alt = '';
-    img.className = 'preview-photo';
-    img.loading = 'lazy';
-    img.decoding = 'async';
-    card.appendChild(img);
-  }
-
-  const header = document.createElement('div');
-  const nameStrong = document.createElement('strong');
-  nameStrong.textContent = place.name ?? '';
-  header.appendChild(nameStrong);
-  if (place.rating != null) {
-    header.appendChild(document.createTextNode(
-        ` ★ ${place.rating.toFixed(1)} (${place.rating_count})`));
-  }
-  card.appendChild(header);
-
-  if (place.website) {
-    const row = document.createElement('div');
-    const strong = document.createElement('strong');
-    const a = document.createElement('a');
-    a.href = place.website;
-    a.textContent = place.website;
-    a.target = '_blank';
-    a.rel = 'noopener noreferrer';
-    strong.appendChild(a);
-    row.appendChild(strong);
-    card.appendChild(row);
-  }
-
-  if (place.emails && place.emails.length > 0) {
-    const row = document.createElement('div');
-    place.emails.forEach((email, i) => {
-      if (i > 0) row.appendChild(document.createTextNode(', '));
-      const a = document.createElement('a');
-      a.href = `mailto:${email}`;
-      a.textContent = email;
-      row.appendChild(a);
-    });
-    card.appendChild(row);
-  }
-
-  // appendReviewsSection(card, place.reviews);
-  // appendPhotosSection(card, place.photos);
-  return card;
-}
-
-function appendReviewsSection(card, reviews) {
-  if (reviews?.length) {
-    appendBoldRow(card, `Reviews (${reviews.length})`);
-    for (const r of reviews) {
-      const date = r.published_at ? r.published_at.slice(0, 10) : '';
-      const star = r.rating != null ? `★ ${r.rating}` : '★ -';
-      const author = r.author_name ?? 'anon';
-      appendBoldRow(card, `${star} — ${author} (${date})`);
-      appendTextRow(card, r.text);
-    }
-  }
-}
-
-function appendPhotosSection(card, photos) {
-  if (photos?.length) {
-    appendBoldRow(card, `Photos (${photos.length})`);
-    for (const p of photos) {
-      appendLinkRow(card, p.google_maps_uri, p.google_maps_uri, '_blank');
-    }
-  }
-}
-
-function appendTextRow(parent, text) {
-  if (text == null) return;
-  const row = document.createElement('div');
-  row.textContent = text;
-  parent.appendChild(row);
-}
-
-function appendBoldRow(parent, text) {
-  if (text == null) return;
-  const row = document.createElement('div');
-  const strong = document.createElement('strong');
-  strong.textContent = text;
-  row.appendChild(strong);
-  parent.appendChild(row);
-}
-
-function appendLinkRow(parent, href, text, target) {
-  const row = document.createElement('div');
-  const a = document.createElement('a');
-  a.href = href;
-  a.textContent = text;
-  if (target) {
-    a.target = target;
-    a.rel = 'noopener noreferrer';
-  }
-  row.appendChild(a);
-  parent.appendChild(row);
 }
 
 await init();
