@@ -5,7 +5,20 @@ gmp-map {
 
 #places-list {
   display: grid;
-  grid-template-columns: 8vw 16vw 6vw 16vw 14vw 10vw 25vw;
+  grid-template-columns: 7vw 16vw 5vw 6vw 14vw 14vw 8vw 25vw;
+}
+
+.header-clickable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.header-clickable:hover {
+  background-color: #f0f0f0;
+}
+
+#reset-view-btn {
+  margin-bottom: 6px;
 }
 
 .place-card, .places-header {

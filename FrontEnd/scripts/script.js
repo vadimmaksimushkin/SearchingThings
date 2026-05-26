@@ -142,7 +142,7 @@ async function init() {
     });
     counter.n += 1;
     const displayLabel = `${typeLabel} ${counter.n}`;
-    placeStore.set(place.place_id, {place, marker, reviews: [], photos: [], enriched, displayLabel});
+    placeStore.set(place.place_id, {place, marker, reviews: [], photos: [], enriched, displayLabel, resultNumber: counter.n});
     marker.addListener('gmp-click', () => onMarkerClick(place.place_id));
     clusterer.addMarker(marker, true);
     if (counter.n % yieldEvery === 0) {
@@ -159,6 +159,114 @@ async function init() {
     }
   }
 
+  const sortState = {column: null, direction: null};
+  const filterState = {hideBlankWebsites: false, hideBlankEmails: false, hideBlankPhones: false};
+
+  const headerRating = document.getElementById('header-rating');
+  const headerRatingCount = document.getElementById('header-rating-count');
+  const headerWebsite = document.getElementById('header-website');
+  const headerEmails = document.getElementById('header-emails');
+  const headerPhone = document.getElementById('header-phone');
+  const resetViewBtn = document.getElementById('reset-view-btn');
+
+  function applyFilterToEntry(entry) {
+    if (!entry.listEntry) return;
+    const hasWebsite = !!entry.place.website;
+    const hasEmails = !!(entry.place.emails?.length);
+    const hasPhone = !!entry.place.phone;
+    const hidden = (filterState.hideBlankWebsites && !hasWebsite) ||
+                   (filterState.hideBlankEmails && !hasEmails) ||
+                   (filterState.hideBlankPhones && !hasPhone);
+    entry.listEntry.style.display = hidden ? 'none' : '';
+  }
+
+  function sortEntries(entries) {
+    const key = sortState.column;
+    if (!key) {
+      entries.sort((a, b) => a.resultNumber - b.resultNumber);
+      return;
+    }
+    const dir = sortState.direction === 'asc' ? 1 : -1;
+    entries.sort((a, b) => {
+      const va = a.place[key];
+      const vb = b.place[key];
+      const aNull = va == null;
+      const bNull = vb == null;
+      if (aNull && bNull) return a.resultNumber - b.resultNumber;
+      if (aNull) return 1;
+      if (bNull) return -1;
+      return (va - vb) * dir;
+    });
+  }
+
+  function applySortAndFilter() {
+    const entries = Array.from(placeStore.values()).filter((e) => e.listEntry);
+    for (const entry of entries) applyFilterToEntry(entry);
+    sortEntries(entries);
+    const frag = document.createDocumentFragment();
+    for (const entry of entries) frag.appendChild(entry.listEntry);
+    placesList.appendChild(frag);
+    updateHeaderUI();
+  }
+
+  function cycleSortState(column) {
+    if (sortState.column !== column) {
+      sortState.column = column;
+      sortState.direction = 'asc';
+    } else if (sortState.direction === 'asc') {
+      sortState.direction = 'desc';
+    } else {
+      sortState.column = null;
+      sortState.direction = null;
+    }
+  }
+
+  function sortArrow(column) {
+    if (sortState.column !== column) return '';
+    return sortState.direction === 'asc' ? ' ↑' : ' ↓';
+  }
+
+  function updateHeaderUI() {
+    headerRating.textContent = `Rating${sortArrow('rating')}`;
+    headerRatingCount.textContent = `Rating count${sortArrow('rating_count')}`;
+    headerWebsite.textContent = filterState.hideBlankWebsites
+        ? 'Website (hiding blanks)' : 'Website';
+    headerEmails.textContent = filterState.hideBlankEmails
+        ? 'Emails (hiding blanks)' : 'Emails';
+    headerPhone.textContent = filterState.hideBlankPhones
+        ? 'Phone (hiding blanks)' : 'Phone';
+  }
+
+  headerRating.addEventListener('click', () => {
+    cycleSortState('rating');
+    applySortAndFilter();
+  });
+  headerRatingCount.addEventListener('click', () => {
+    cycleSortState('rating_count');
+    applySortAndFilter();
+  });
+  headerWebsite.addEventListener('click', () => {
+    filterState.hideBlankWebsites = !filterState.hideBlankWebsites;
+    applySortAndFilter();
+  });
+  headerEmails.addEventListener('click', () => {
+    filterState.hideBlankEmails = !filterState.hideBlankEmails;
+    applySortAndFilter();
+  });
+  headerPhone.addEventListener('click', () => {
+    filterState.hideBlankPhones = !filterState.hideBlankPhones;
+    applySortAndFilter();
+  });
+  resetViewBtn.addEventListener('click', () => {
+    sortState.column = null;
+    sortState.direction = null;
+    filterState.hideBlankWebsites = false;
+    filterState.hideBlankEmails = false;
+    filterState.hideBlankPhones = false;
+    applySortAndFilter();
+  });
+  updateHeaderUI();
+
   function renderListEntry(place_id) {
     const entry = placeStore.get(place_id);
     if (!entry) return;
@@ -170,6 +278,7 @@ async function init() {
       placesList.appendChild(row);
       entry.listEntry = row;
     }
+    applyFilterToEntry(entry);
   }
 
   function setSearchLocation(lat, lng) {
@@ -363,9 +472,15 @@ function buildPlaceRow(place) {
 
   const ratingCell = document.createElement('div');
   if (place.rating != null) {
-    ratingCell.textContent = `★ ${place.rating.toFixed(1)} (${place.rating_count})`;
+    ratingCell.textContent = `★ ${place.rating.toFixed(1)}`;
   }
   row.appendChild(ratingCell);
+
+  const ratingCountCell = document.createElement('div');
+  if (place.rating_count != null) {
+    ratingCountCell.textContent = String(place.rating_count);
+  }
+  row.appendChild(ratingCountCell);
 
   const websiteCell = document.createElement('div');
   if (place.website) {
