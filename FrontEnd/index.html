@@ -3,13 +3,11 @@
   <head>
     <title>Map test</title>
     <link rel="stylesheet" type="text/css" href="styles/styles.css" />
-    <script src="https://unpkg.com/@googlemaps/markerclusterer/dist/index.min.js"></script>
+    <!-- //NOSONAR --> <script src="https://unpkg.com/@googlemaps/markerclusterer/dist/index.min.js"></script>
     <script type="module" src="scripts/script.js"></script>
-    <!-- //NOSONAR --> <script>
-      // prettier-ignore
+    <!-- //NOSONAR --> <script> // prettier-ignore
       (g=>{var h,a,k,p="The Google Maps JavaScript API",c="google",l="importLibrary",q="__ib__",m=document,b=window;b=b[c]||(b[c]={});var d=b.maps||(b.maps={}),r=new Set,e=new URLSearchParams,u=()=>h||(h=new Promise(async(f,n)=>{await (a=m.createElement("script"));e.set("libraries",[...r]+"");for(k in g)e.set(k.replace(/[A-Z]/g,t=>"_"+t[0].toLowerCase()),g[k]);e.set("callback",c+".maps."+q);a.src=`https://maps.${c}apis.com/maps/api/js?`+e;d[q]=f;a.onerror=()=>h=n(Error(p+" could not load."));a.nonce=m.querySelector("script[nonce]")?.nonce||"";m.head.append(a)}));d[l]?console.warn(p+" only loads once. Ignoring:",g):d[l]=(f,...n)=>r.add(f)&&u().then(()=>d[l](f,...n))})({
-      key: "AIzaSyAMJ2Ej22fXCzpKnW17xg8rZryDH0PB3EQ"});
-    </script>
+      key: "AIzaSyAMJ2Ej22fXCzpKnW17xg8rZryDH0PB3EQ"});</script>
   </head>
   <body>
     <h1>Map test</h1>
@@ -24,9 +22,9 @@
     <label>Type: <input id="type-input" type="text" value="gym" /></label>
     <br/>
     <label><input id="local-only" type="checkbox" checked="true" disabled="true"/> Local DB only</label>
-    <!-- <label><input id="local-only" type="checkbox" checked="true"/> Local DB only</label> -->
-    <label><input id="include-reviews-input" type="checkbox" checked="true"/> Include reviews</label>
-    <label><input id="include-photos-input" type="checkbox" checked="true"/> Include photos</label>
+    <!-- //NOSONAR --> <!-- <label><input id="local-only" type="checkbox" checked="true"/> Local DB only</label> -->
+    <label><input id="include-reviews-input" type="checkbox"/> Include reviews</label>
+    <label><input id="include-photos-input" type="checkbox"/> Include photos</label>
     <br/>
     <button id="search-btn">Search</button>
     <button id="clear-btn">Clear</button>

@@ -129,9 +129,6 @@ export function buildPlaceCard(place) {
     });
     card.appendChild(row);
   }
-
-  // appendReviewsSection(card, place.reviews);
-  // appendPhotosSection(card, place.photos);
   return card;
 }
 
@@ -140,7 +137,7 @@ function appendReviewsSection(card, reviews) {
     appendBoldRow(card, `Reviews (${reviews.length})`);
     for (const r of reviews) {
       const date = r.published_at ? r.published_at.slice(0, 10) : '';
-      const star = r.rating != null ? `★ ${r.rating}` : '★ -';
+      const star = `★ ${r.rating ?? '-'}`;
       const author = r.author_name ?? 'anon';
       appendBoldRow(card, `${star} — ${author} (${date})`);
       appendTextRow(card, r.text);
