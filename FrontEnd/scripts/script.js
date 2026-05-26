@@ -153,19 +153,22 @@ async function init() {
     return true;
   }
 
+  function clearPlacesList() {
+    for (const row of placesList.querySelectorAll('.place-card')) {
+      row.remove();
+    }
+  }
+
   function renderListEntry(place_id) {
     const entry = placeStore.get(place_id);
     if (!entry) return;
     const detail = {...entry.place, reviews: entry.reviews, photos: entry.photos, displayLabel: entry.displayLabel};
-    const card = buildPlaceCard(detail);
+    const row = buildPlaceRow(detail);
     if (entry.listEntry) {
-      entry.listEntry.replaceChildren(card);
+      entry.listEntry.replaceChildren(...row.children);
     } else {
-      const wrapper = document.createElement('div');
-      wrapper.className = 'place-card';
-      wrapper.appendChild(card);
-      placesList.appendChild(wrapper);
-      entry.listEntry = wrapper;
+      placesList.appendChild(row);
+      entry.listEntry = row;
     }
   }
 
@@ -200,7 +203,7 @@ async function init() {
 
     debug.textContent = '';
     debug2.textContent = '';
-    placesList.replaceChildren();
+    clearPlacesList();
     debug.textContent += `Input mainType=${main_type}, lat=${lat}, lon=${
         lon}, radius=${radius}, is_rectangle=${is_rectangle}, max-restuls=${
         max_results}, localOnly=${local_only}, includeReviews=${
@@ -274,7 +277,7 @@ async function init() {
     latInput.value = cdmx_center_lat;
     debug.textContent = '';
     debug2.textContent = '';
-    placesList.replaceChildren();
+    clearPlacesList();
   });
 }
 
@@ -342,6 +345,73 @@ async function* readNdjson(response) {
       if (line) yield line;
     }
   }
+}
+
+function buildPlaceRow(place) {
+  const row = document.createElement('div');
+  row.className = 'place-card';
+
+  const typeCell = document.createElement('div');
+  if (place.displayLabel) typeCell.textContent = place.displayLabel;
+  row.appendChild(typeCell);
+
+  const nameCell = document.createElement('div');
+  const nameStrong = document.createElement('strong');
+  nameStrong.textContent = place.name ?? '';
+  nameCell.appendChild(nameStrong);
+  row.appendChild(nameCell);
+
+  const ratingCell = document.createElement('div');
+  if (place.rating != null) {
+    ratingCell.textContent = `★ ${place.rating.toFixed(1)} (${place.rating_count})`;
+  }
+  row.appendChild(ratingCell);
+
+  const websiteCell = document.createElement('div');
+  if (place.website) {
+    const a = document.createElement('a');
+    a.href = place.website;
+    a.textContent = place.website;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    websiteCell.appendChild(a);
+  }
+  row.appendChild(websiteCell);
+
+  const emailsCell = document.createElement('div');
+  if (place.emails?.length) {
+    place.emails.forEach((email, i) => {
+      if (i > 0) emailsCell.appendChild(document.createTextNode(', '));
+      const a = document.createElement('a');
+      a.href = `mailto:${email}`;
+      a.textContent = email;
+      emailsCell.appendChild(a);
+    });
+  }
+  row.appendChild(emailsCell);
+
+  const phoneCell = document.createElement('div');
+  if (place.phone) {
+    const a = document.createElement('a');
+    a.href = `tel:${place.phone}`;
+    a.textContent = place.phone;
+    phoneCell.appendChild(a);
+  }
+  row.appendChild(phoneCell);
+
+  const previewCell = document.createElement('div');
+  if (place.preview_photo) {
+    const img = document.createElement('img');
+    img.src = place.preview_photo;
+    img.alt = '';
+    img.className = 'preview-photo';
+    img.loading = 'lazy';
+    img.decoding = 'async';
+    previewCell.appendChild(img);
+  }
+  row.appendChild(previewCell);
+
+  return row;
 }
 
 function buildPlaceCard(place) {

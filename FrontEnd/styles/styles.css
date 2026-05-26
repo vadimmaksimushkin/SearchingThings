@@ -3,14 +3,29 @@ gmp-map {
   height: 60vh;
 }
 
-.place-card {
+#places-list {
+  display: grid;
+  grid-template-columns: 8vw 16vw 6vw 16vw 14vw 10vw 25vw;
+}
+
+.place-card, .places-header {
+  display: contents;
+}
+
+.place-card > *, .places-header > * {
   border-bottom: 1px solid #000000;
-  padding: 8px 0;
-  content-visibility: auto;
-  contain-intrinsic-size: 0 200px;
+  padding: 8px 12px 8px 0;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.places-header > * {
+  font-weight: bold;
+  border-bottom: 2px solid #000000;
 }
 
 .preview-photo {
   display: block;
-  max-width: 20vw;
+  width: 100%;
+  height: auto;
 }
