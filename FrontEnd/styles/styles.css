@@ -47,6 +47,8 @@ gmp-map {
 
 .preview-photo {
   display: block;
-  width: 100%;
-  height: auto;
+  width: auto;
+  max-height: 40px;
+  /* width: 100%; */
+  /* height: auto; */
 }
