@@ -203,7 +203,7 @@ async def find_places_rectangle(
     main_type: str,
     max_results: int = 10,
     order_by: ORDER_BY = "rating",
-    prefetch: int = 5) -> AsyncIterator[Place]:
+    prefetch: int = 50) -> AsyncIterator[Place]:
     if location.south_west is None or location.north_east is None:
         raise ValueError("Location has no bounding box (south_west / north_east)")
     if order_by == "location" and (location.center_point is None):
@@ -238,7 +238,7 @@ async def find_places_circle(
     main_type: str,
     max_results: int = 10,
     order_by: ORDER_BY = "location",
-    prefetch: int = 5) -> AsyncIterator[Place]:
+    prefetch: int = 50) -> AsyncIterator[Place]:
     if location.center_point is None or location.radius is None:
         raise ValueError("Location has no center point / radius for circle search")
 
@@ -271,7 +271,7 @@ async def fetch_place_detail(pool: asyncpg.Pool, place_id: str) -> PlaceDetail |
 
 
 async def fetch_reviews_for_ids(
-    pool: asyncpg.Pool, place_ids: list[str], prefetch: int = 5,
+    pool: asyncpg.Pool, place_ids: list[str], prefetch: int = 50,
 ) -> AsyncIterator[tuple[str, list[Review]]]:
     """Stream reviews grouped by place_id; relies on ORDER BY place_id in SQL."""
     if not place_ids:
@@ -294,7 +294,7 @@ async def fetch_reviews_for_ids(
 
 
 async def fetch_photos_for_ids(
-    pool: asyncpg.Pool, place_ids: list[str], prefetch: int = 5,
+    pool: asyncpg.Pool, place_ids: list[str], prefetch: int = 50,
 ) -> AsyncIterator[tuple[str, list[Photo]]]:
     """Stream photos grouped by place_id; relies on ORDER BY place_id in SQL."""
     if not place_ids:
