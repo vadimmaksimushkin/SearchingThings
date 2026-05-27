@@ -122,12 +122,11 @@ async def search_by_location(
     )
     location = Location.from_center_point((lat, lon), radius, is_rectangle=is_rectangle)
     search = find_places_rectangle if is_rectangle else find_places_circle
-    return await search(
-        pool,
-        location,
-        main_type=main_type,
-        max_results=max_results,
-    )
+    return [
+        p async for p in search(
+            pool, location, main_type=main_type, max_results=max_results,
+        )
+    ]
 
 
 @app.get("/place/{place_id}")

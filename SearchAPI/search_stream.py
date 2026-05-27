@@ -118,6 +118,65 @@ async def google_producer(
         await queue.put(None)
 
 
+async def produce_reviews(
+    pool: asyncpg.Pool,
+    place_ids: list[str],
+    queue: asyncio.Queue[ReviewsEvent | PhotosEvent | ErrorEvent | None],
+) -> None:
+    try:
+        async for pid, items in fetch_reviews_for_ids(pool, place_ids):
+            await queue.put(ReviewsEvent(place_id=pid, items=items))
+    except Exception as e:
+        log.exception("[stage1] reviews stream failed")
+        await queue.put(ErrorEvent(message=f"reviews: {e}"))
+    finally:
+        await queue.put(None)
+
+
+async def produce_photos(
+    pool: asyncpg.Pool,
+    place_ids: list[str],
+    queue: asyncio.Queue[ReviewsEvent | PhotosEvent | ErrorEvent | None],
+) -> None:
+    try:
+        async for pid, items in fetch_photos_for_ids(pool, place_ids):
+            await queue.put(PhotosEvent(place_id=pid, items=items))
+    except Exception as e:
+        log.exception("[stage1] photos stream failed")
+        await queue.put(ErrorEvent(message=f"photos: {e}"))
+    finally:
+        await queue.put(None)
+
+
+async def stream_reviews_and_photos(
+    pool: asyncpg.Pool, place_ids: list[str],
+    include_reviews: bool, include_photos: bool,
+) -> AsyncIterator[ReviewsEvent | PhotosEvent | ErrorEvent]:
+    """Run reviews and photos cursors concurrently; merge events onto one stream."""
+    queue: asyncio.Queue[ReviewsEvent | PhotosEvent | ErrorEvent | None] = asyncio.Queue()
+
+    tasks: list[asyncio.Task[None]] = []
+    if include_reviews:
+        tasks.append(asyncio.create_task(produce_reviews(pool, place_ids, queue)))
+    if include_photos:
+        tasks.append(asyncio.create_task(produce_photos(pool, place_ids, queue)))
+    if not tasks:
+        return
+    try:
+        remaining = len(tasks)
+        while remaining > 0:
+            event = await queue.get()
+            if event is None:
+                remaining -= 1
+            else:
+                yield event
+    finally:
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 async def stage1_local(
     pool: asyncpg.Pool, location: Location, main_type: str,
     max_results: int, is_rectangle: bool,
@@ -126,22 +185,20 @@ async def stage1_local(
 ) -> AsyncIterator[bytes]:
     """Stage 1. stream local-DB matches + optional batched reviews/photos."""
     search = find_places_rectangle if is_rectangle else find_places_circle
-    places = await search(pool, location, main_type=main_type, max_results=max_results)
     local_ids: list[str] = []
-    for place in places:
+    async for place in search(
+        pool, location, main_type=main_type, max_results=max_results,
+    ):
         streamed_ids.add(place.place_id)
         local_ids.append(place.place_id)
-
         yield ndjson(PlacePreviewEvent(place=place))
 
-    if include_reviews and local_ids:
-        reviews_by_place_id = await fetch_reviews_for_ids(pool, local_ids)
-        for place_id, items in reviews_by_place_id.items():
-            yield ndjson(ReviewsEvent(place_id=place_id, items=items))
-    if include_photos and local_ids:
-        photos_by_pid = await fetch_photos_for_ids(pool, local_ids)
-        for place_id, items in photos_by_pid.items():
-            yield ndjson(PhotosEvent(place_id=place_id, items=items))
+    if not local_ids or not (include_reviews or include_photos):
+        return
+    async for event in stream_reviews_and_photos(
+        pool, local_ids, include_reviews, include_photos,
+    ):
+        yield ndjson(event)
 
 
 async def stage2_3_google(

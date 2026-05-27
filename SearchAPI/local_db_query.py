@@ -3,6 +3,7 @@ import asyncpg
 import orjson
 import sys
 from pathlib import Path
+from collections.abc import AsyncIterator
 from typing import Any, Literal
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from credentials import PLACES_DB_URL, R2_PUBLIC_URL
@@ -103,6 +104,7 @@ QUERY_FETCH_PHOTOS = f"""
     SELECT place_id, {PHOTO_COLUMNS}
     FROM photos
     WHERE place_id = ANY($1::text[])
+    ORDER BY place_id
 """
 
 UPSERT_PLACE_SQL = """
@@ -183,11 +185,14 @@ async def init_connection(conn: asyncpg.Connection) -> None:
     )
 
 
-async def create_pool(min_size: int = 1, max_size: int = 10) -> asyncpg.Pool:
+async def create_pool(
+    min_size: int = 1, max_size: int = 10, command_timeout: float = 30.0,
+) -> asyncpg.Pool:
     return await asyncpg.create_pool(
         PLACES_DB_URL,
         min_size=min_size,
         max_size=max_size,
+        command_timeout=command_timeout,
         init=init_connection,
     )
 
@@ -197,7 +202,8 @@ async def find_places_rectangle(
     location: Location,
     main_type: str,
     max_results: int = 10,
-    order_by: ORDER_BY = "rating") -> list[Place]:
+    order_by: ORDER_BY = "rating",
+    prefetch: int = 5) -> AsyncIterator[Place]:
     if location.south_west is None or location.north_east is None:
         raise ValueError("Location has no bounding box (south_west / north_east)")
     if order_by == "location" and (location.center_point is None):
@@ -207,19 +213,23 @@ async def find_places_rectangle(
     ne_lat, ne_lon = location.north_east
 
     async with pool.acquire() as conn:
-        if order_by == "rating":
-            rows = await conn.fetch(
-                QUERY_RECTANGLE_ORDER_BY_RATING,
-                main_type, sw_lon, sw_lat, ne_lon, ne_lat, max_results,
-            )
-        else:
-            center_lat, center_lon = location.center_point # type: ignore
-            rows = await conn.fetch(
-                QUERY_RECTANGLE_ORDER_BY_LOCATION,
-                main_type, sw_lon, sw_lat, ne_lon, ne_lat,
-                center_lon, center_lat, max_results, # type: ignore
-            )
-    return [Place(**add_preview_link_to_place(dict(row))) for row in rows]
+        async with conn.transaction():
+            if order_by == "rating":
+                cursor = conn.cursor(
+                    QUERY_RECTANGLE_ORDER_BY_RATING,
+                    main_type, sw_lon, sw_lat, ne_lon, ne_lat, max_results,
+                    prefetch=prefetch,
+                )
+            else:
+                center_lat, center_lon = location.center_point # type: ignore
+                cursor = conn.cursor(
+                    QUERY_RECTANGLE_ORDER_BY_LOCATION,
+                    main_type, sw_lon, sw_lat, ne_lon, ne_lat,
+                    center_lon, center_lat, max_results, # type: ignore
+                    prefetch=prefetch,
+                )
+            async for row in cursor:
+                yield Place(**add_preview_link_to_place(dict(row)))
 
 
 async def find_places_circle(
@@ -227,20 +237,22 @@ async def find_places_circle(
     location: Location,
     main_type: str,
     max_results: int = 10,
-    order_by: ORDER_BY = "location") -> list[Place]:
+    order_by: ORDER_BY = "location",
+    prefetch: int = 5) -> AsyncIterator[Place]:
     if location.center_point is None or location.radius is None:
         raise ValueError("Location has no center point / radius for circle search")
 
     center_lat, center_lon = location.center_point
     radius = location.radius
+    query = QUERY_CIRCLE_ORDER_BY_RATING if order_by == "rating" else QUERY_CIRCLE_ORDER_BY_LOCATION
 
     async with pool.acquire() as conn:
-        query = QUERY_CIRCLE_ORDER_BY_RATING if order_by == "rating" else QUERY_CIRCLE_ORDER_BY_LOCATION
-        rows = await conn.fetch(
-            query,
-            main_type, center_lon, center_lat, radius, max_results,
-        )
-    return [Place(**add_preview_link_to_place(dict(row))) for row in rows]
+        async with conn.transaction():
+            async for row in conn.cursor(
+                query, main_type, center_lon, center_lat, radius, max_results,
+                prefetch=prefetch,
+            ):
+                yield Place(**add_preview_link_to_place(dict(row)))
 
 
 async def fetch_place_detail(pool: asyncpg.Pool, place_id: str) -> PlaceDetail | None:
@@ -259,33 +271,49 @@ async def fetch_place_detail(pool: asyncpg.Pool, place_id: str) -> PlaceDetail |
 
 
 async def fetch_reviews_for_ids(
-    pool: asyncpg.Pool, place_ids: list[str]) -> dict[str, list[Review]]:
-    """Batch-fetch reviews for many place_ids in one round trip."""
+    pool: asyncpg.Pool, place_ids: list[str], prefetch: int = 5,
+) -> AsyncIterator[tuple[str, list[Review]]]:
+    """Stream reviews grouped by place_id; relies on ORDER BY place_id in SQL."""
     if not place_ids:
-        return {}
+        return
     async with pool.acquire() as conn:
-        rows = await conn.fetch(QUERY_FETCH_REVIEWS, place_ids)
-    result: dict[str, list[Review]] = {}
-    for r in rows:
-        d = dict(r)
-        pid = d.pop("place_id") # raw review has 'place_id' encoded in 'name'
-        result.setdefault(pid, []).append(Review(**d))
-    return result
+        async with conn.transaction():
+            current_pid: str | None = None
+            current_items: list[Review] = []
+            async for row in conn.cursor(QUERY_FETCH_REVIEWS, place_ids, prefetch=prefetch):
+                d = dict(row)
+                pid = d.pop("place_id")
+                if pid != current_pid:
+                    if current_pid is not None:
+                        yield current_pid, current_items
+                    current_pid = pid
+                    current_items = []
+                current_items.append(Review(**d))
+            if current_pid is not None:
+                yield current_pid, current_items
 
 
 async def fetch_photos_for_ids(
-    pool: asyncpg.Pool, place_ids: list[str]) -> dict[str, list[Photo]]:
-    """Batch-fetch photos for many place_ids in one round trip."""
+    pool: asyncpg.Pool, place_ids: list[str], prefetch: int = 5,
+) -> AsyncIterator[tuple[str, list[Photo]]]:
+    """Stream photos grouped by place_id; relies on ORDER BY place_id in SQL."""
     if not place_ids:
-        return {}
+        return
     async with pool.acquire() as conn:
-        rows = await conn.fetch(QUERY_FETCH_PHOTOS, place_ids)
-    result: dict[str, list[Photo]] = {}
-    for r in rows:
-        d = dict(r)
-        pid = d.pop("place_id") # raw photo has 'place_id' encoded in 'name'
-        result.setdefault(pid, []).append(Photo(**add_url_to_photo(d)))
-    return result
+        async with conn.transaction():
+            current_pid: str | None = None
+            current_items: list[Photo] = []
+            async for row in conn.cursor(QUERY_FETCH_PHOTOS, place_ids, prefetch=prefetch):
+                d = dict(row)
+                pid = d.pop("place_id")
+                if pid != current_pid:
+                    if current_pid is not None:
+                        yield current_pid, current_items
+                    current_pid = pid
+                    current_items = []
+                current_items.append(Photo(**add_url_to_photo(d)))
+            if current_pid is not None:
+                yield current_pid, current_items
 
 
 async def upsert_place(
@@ -379,8 +407,8 @@ if __name__ == "__main__":
 
             rect_loc = Location.from_center_point(CDMX_TEST, 50_000, is_rectangle=True)
             circle_loc = Location.from_center_point(CDMX_TEST, 50_000, is_rectangle=False)
-            rect_results = await find_places_rectangle(pool, rect_loc, main_type="gym", max_results=2_000, order_by="rating")
-            circle_results = await find_places_circle(pool, circle_loc, main_type="gym", max_results=2_000, order_by="location")
+            rect_results = [p async for p in find_places_rectangle(pool, rect_loc, main_type="gym", max_results=2_000, order_by="rating")]
+            circle_results = [p async for p in find_places_circle(pool, circle_loc, main_type="gym", max_results=2_000, order_by="location")]
             print(len(rect_results))
             print(len(circle_results))
             print("done")

@@ -152,7 +152,6 @@ async def google_text_search(
         location_payload: dict[str, Any] = location.to_circle()
         location_restriction_type: str = "locationBias"
 
-    log.error(f"google_text_search.is_rectangle={is_rectangle}")
     field_mask = LIVE_TEXT_SEARCH_MASK if live else IDS_TEXT_SEARCH_MASK
     async with aiohttp.ClientSession() as session:
         return await paginated_search(
