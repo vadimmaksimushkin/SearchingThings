@@ -28,6 +28,88 @@ gmp-map {
 #reset-view-btn {
   margin-bottom: 6px;
 }
+/*
+#export-status {
+  margin-left: 8px;
+  font-size: 13px;
+  color: #555;
+}
+
+.export-dialog {
+  max-width: 560px;
+  width: 90vw;
+  padding: 18px 20px;
+  border: 1px solid #999;
+  border-radius: 6px;
+}
+
+.export-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.export-dialog h3 {
+  margin: 0 0 12px 0;
+}
+
+.export-dialog fieldset {
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  margin: 0 0 12px 0;
+  padding: 8px 12px 12px;
+}
+
+.export-dialog legend {
+  padding: 0 6px;
+  font-weight: bold;
+}
+
+.export-dialog .format-option {
+  margin-right: 16px;
+  cursor: pointer;
+}
+*/
+
+.export-dialog .columns-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 4px 12px;
+}
+
+/*
+.export-dialog .column-option {
+  cursor: pointer;
+  user-select: none;
+}
+
+.export-dialog .quick-actions {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+}
+
+.export-dialog .related-option {
+  display: block;
+  cursor: pointer;
+  user-select: none;
+  margin: 2px 0;
+}
+
+.export-dialog .related-option:has(input:disabled) {
+  color: #999;
+  cursor: not-allowed;
+}
+
+.export-dialog .export-count {
+  margin: 4px 0 12px;
+  color: #555;
+  font-size: 13px;
+}
+
+.export-dialog .dialog-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+} */
 
 .place-card, .places-header {
   display: contents;

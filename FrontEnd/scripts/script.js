@@ -3,6 +3,7 @@
 import {SHOW_DEBUG, canonicalType, displayType} from './config.js';
 import {searchByLocationStream} from './api.js';
 import {buildPlaceRow, buildPlaceCard} from './render.js';
+import {setupExport} from './export.js';
 
 async function init() {
   const [{AdvancedMarkerElement, PinElement}, {InfoWindow}] =
@@ -32,8 +33,10 @@ async function init() {
   const includePhotosInput = document.getElementById('include-photos-input');
   const searchBtn = document.getElementById('search-btn');
   const clearBtn = document.getElementById('clear-btn');
-  const debug = SHOW_DEBUG ? document.getElementById('debug') : {textContent: ''};
-  const debug2 = SHOW_DEBUG ? document.getElementById('debug2') : {textContent: ''};
+  const debug =
+      SHOW_DEBUG ? document.getElementById('debug') : {textContent: ''};
+  const debug2 =
+      SHOW_DEBUG ? document.getElementById('debug2') : {textContent: ''};
   const placesList = document.getElementById('places-list');
   if (!SHOW_DEBUG) {
     document.getElementById('debug-section').hidden = true;
@@ -52,10 +55,16 @@ async function init() {
   });
   const placeStore = new Map();
   const clusterer = new markerClusterer.MarkerClusterer({map: innerMap});
+  let lastSearch = null;
 
   async function onMarkerClick(place_id) {
     const entry = placeStore.get(place_id);
-    const detail = {...entry?.place, reviews: entry?.reviews, photos: entry?.photos, displayLabel: entry?.displayLabel};
+    const detail = {
+      ...entry?.place,
+      reviews: entry?.reviews,
+      photos: entry?.photos,
+      displayLabel: entry?.displayLabel
+    };
     const card = buildPlaceCard(detail);
     Object.assign(card.style, {
       width: 'max(200px, 30vw)',
@@ -63,12 +72,15 @@ async function init() {
       lineHeight: '1.4',
     });
     const photo = card.querySelector('.preview-photo');
-    if (photo) Object.assign(photo.style, {width: '100%', maxWidth: '100%', height: 'auto'});
+    if (photo)
+      Object.assign(
+          photo.style, {width: '100%', maxWidth: '100%', height: 'auto'});
     const name = card.querySelector('strong');
     const headerDiv = name?.parentElement;
     if (headerDiv) {
       headerDiv.remove();
-      Object.assign(headerDiv.style, {whiteSpace: 'normal', overflowWrap: 'anywhere'});
+      Object.assign(
+          headerDiv.style, {whiteSpace: 'normal', overflowWrap: 'anywhere'});
       name.style.fontSize = 'clamp(13px, 1.3vw, 17px)';
       infoWindow.setHeaderContent(headerDiv);
     } else {
@@ -92,7 +104,15 @@ async function init() {
     });
     counter.n += 1;
     const displayLabel = `${typeLabel} ${counter.n}`;
-    placeStore.set(place.place_id, {place, marker, reviews: [], photos: [], enriched, displayLabel, resultNumber: counter.n});
+    placeStore.set(place.place_id, {
+      place,
+      marker,
+      reviews: [],
+      photos: [],
+      enriched,
+      displayLabel,
+      resultNumber: counter.n
+    });
     marker.addListener('gmp-click', () => onMarkerClick(place.place_id));
     clusterer.addMarker(marker, true);
     if (counter.n % yieldEvery === 0) {
@@ -110,7 +130,11 @@ async function init() {
   }
 
   const sortState = {column: null, direction: null};
-  const filterState = {hideBlankWebsites: false, hideBlankEmails: false, hideBlankPhones: false};
+  const filterState = {
+    hideBlankWebsites: false,
+    hideBlankEmails: false,
+    hideBlankPhones: false
+  };
 
   const headerRating = document.getElementById('header-rating');
   const headerRatingCount = document.getElementById('header-rating-count');
@@ -125,8 +149,8 @@ async function init() {
     const hasEmails = !!(entry.place.emails?.length);
     const hasPhone = !!entry.place.phone;
     const hidden = (filterState.hideBlankWebsites && !hasWebsite) ||
-                   (filterState.hideBlankEmails && !hasEmails) ||
-                   (filterState.hideBlankPhones && !hasPhone);
+        (filterState.hideBlankEmails && !hasEmails) ||
+        (filterState.hideBlankPhones && !hasPhone);
     entry.listEntry.style.display = hidden ? 'none' : '';
   }
 
@@ -179,12 +203,12 @@ async function init() {
   function updateHeaderUI() {
     headerRating.textContent = `Rating${sortArrow('rating')}`;
     headerRatingCount.textContent = `Rating count${sortArrow('rating_count')}`;
-    headerWebsite.textContent = filterState.hideBlankWebsites
-        ? 'Website (hiding blanks)' : 'Website';
-    headerEmails.textContent = filterState.hideBlankEmails
-        ? 'Emails (hiding blanks)' : 'Emails';
-    headerPhone.textContent = filterState.hideBlankPhones
-        ? 'Phone (hiding blanks)' : 'Phone';
+    headerWebsite.textContent =
+        filterState.hideBlankWebsites ? 'Website (hiding blanks)' : 'Website';
+    headerEmails.textContent =
+        filterState.hideBlankEmails ? 'Emails (hiding blanks)' : 'Emails';
+    headerPhone.textContent =
+        filterState.hideBlankPhones ? 'Phone (hiding blanks)' : 'Phone';
   }
 
   headerRating.addEventListener('click', () => {
@@ -229,7 +253,12 @@ async function init() {
   function renderListEntry(place_id) {
     const entry = placeStore.get(place_id);
     if (!entry) return;
-    const detail = {...entry.place, reviews: entry.reviews, photos: entry.photos, displayLabel: entry.displayLabel};
+    const detail = {
+      ...entry.place,
+      reviews: entry.reviews,
+      photos: entry.photos,
+      displayLabel: entry.displayLabel
+    };
     const row = buildPlaceRow(detail);
     if (entry.listEntry) {
       entry.listEntry.replaceChildren(...row.children);
@@ -263,6 +292,8 @@ async function init() {
     const local_only = localOnlyInput.checked;
     const include_reviews = includeReviewsInput.checked;
     const include_photos = includePhotosInput.checked;
+    lastSearch =
+        {main_type, typeLabel, canonical, include_reviews, include_photos};
 
     userMarker.position = {lat, lng: lon};
 
@@ -282,8 +313,15 @@ async function init() {
       const counter = {n: 0};
       const t0 = performance.now();
       const rawLines = await searchByLocationStream({
-        main_type, lat, lon, radius, is_rectangle, local_only,
-        include_reviews, include_photos, max_results,
+        main_type,
+        lat,
+        lon,
+        radius,
+        is_rectangle,
+        local_only,
+        include_reviews,
+        include_photos,
+        max_results,
       });
       for await (const rawLine of rawLines) {
         const dt = performance.now() - t0;
@@ -291,7 +329,8 @@ async function init() {
         debug2.textContent += JSON.stringify(event, null, 2) + '\n';
         if (event.type === 'place_preview' || event.type === 'place_update') {
           event.place.query_time = dt;
-          await upsertMarker(event.place, enriched, counter, typeLabel, YIELD_EVERY);
+          await upsertMarker(
+              event.place, enriched, counter, typeLabel, YIELD_EVERY);
           renderListEntry(event.place.place_id);
         } else if (event.type === 'reviews') {
           const entry = placeStore.get(event.place_id);
@@ -322,6 +361,25 @@ async function init() {
       searchBtn.disabled = false;
     }
   });
+  function getVisibleEntries() {
+    const out = [];
+    for (const row of placesList.querySelectorAll('.place-card')) {
+      if (row.style.display === 'none') {
+        continue
+      };
+      const entry = placeStore.get(row.dataset.placeId);
+      if (entry) {
+        out.push(entry)
+      };
+    }
+    return out;
+  }
+
+  setupExport({
+    getVisibleEntries,
+    getLastSearch: () => lastSearch,
+  });
+
   clearBtn.addEventListener('click', async () => {
     clusterer.clearMarkers();
     placeStore.clear();
