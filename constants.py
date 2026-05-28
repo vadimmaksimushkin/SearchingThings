@@ -321,9 +321,14 @@ CONTACT_KEYWORDS = [
     "info",
 ]
 
-TYPE_TO_SEARCH = {
-    "shopping_mall": "centro comercial",
-    "gym": "gimnasio"
+# Whitelisted main_types. Key is stored in places.main_type and used as the
+# API/FE identifier. The per-language value is both the display label and the
+# textQuery sent to Google Places searchText. Insertion order = display order.
+MAIN_TYPES: dict[str, dict[str, str]] = {
+    "gym":           {"en": "Gym",           "es": "Gimnasio"},
+    "shopping_mall": {"en": "Shopping Mall", "es": "Centro Comercial"},
+    "bowling_alley": {"en": "Bowling", "es": "Boliche"},
+    "billiard_hall": {"en": "Billiard", "es": "Billar"},
 }
 
 PLACES_URL = "https://places.googleapis.com/v1/places:searchText"

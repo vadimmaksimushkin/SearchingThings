@@ -34,9 +34,9 @@ from SearchAPI.local_db_query import (
     upsert_reviews,
 )
 from SearchAPI.tasks import detach
-from constants import TYPE_TO_SEARCH
+from constants import MAIN_TYPES
 log = logging.getLogger(__name__)
-
+SEARCH_LANG_CODE: str = "es"
 
 def ndjson(event: BaseModel) -> bytes:
     return orjson.dumps(event.model_dump()) + b"\n"
@@ -105,7 +105,12 @@ async def google_producer(
             queue, raw, main_type, streamed_ids, include_reviews, include_photos,
         )
     try:
-        places = await google_text_search(location, is_rectangle, text_query=main_type, live=True)
+        places = await google_text_search(
+            location,
+            is_rectangle,
+            text_query=MAIN_TYPES[main_type][SEARCH_LANG_CODE],
+            live=True,
+        )
         log.info(f"[stage3] textSearch live: {len(places)} places returned")
         await asyncio.gather(
             *(handle_one(raw) for raw in places if raw.get("id")),
@@ -214,7 +219,7 @@ async def stage2_3_google(
         id_results = await google_text_search(
             location,
             is_rectangle,
-            text_query=TYPE_TO_SEARCH.get(main_type, main_type),
+            text_query=MAIN_TYPES[main_type][SEARCH_LANG_CODE],
             live=False
             )
     except Exception as e:

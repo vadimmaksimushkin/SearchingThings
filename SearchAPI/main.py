@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from constants import MAIN_TYPES
 from SearchAPI.models import Place, PlaceDetail
 from SearchAPI.google_fetch import Location
 from SearchAPI.local_db_query import (
@@ -100,9 +101,22 @@ def get_pool(request: Request) -> asyncpg.Pool:
     return pool
 
 
+def validate_main_type(main_type: str) -> None:
+    if main_type not in MAIN_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown main_type {main_type!r}",
+        )
+
+
 @app.get("/")
 async def read_root():
     return {"Hello": "World"}
+
+
+@app.get("/main_types")
+async def list_main_types() -> dict[str, dict[str, str]]:
+    return MAIN_TYPES
 
 
 @app.get("/searchByLocation")
@@ -116,6 +130,7 @@ async def search_by_location(
     max_results: int = Query(10, ge=1, le=2000),
     pool: asyncpg.Pool = Depends(get_pool)
 ) -> list[Place]:
+    validate_main_type(main_type)
     log.info(
         f"mainType={main_type}, lat={lat}, lon={lon}, radius={radius}, "
         f"localOnly={local_only}, maxResults={max_results}"
@@ -153,6 +168,7 @@ async def search_stream(
     max_results: int = Query(10, ge=1, le=2000),
     pool: asyncpg.Pool = Depends(get_pool),
 ) -> StreamingResponse:
+    validate_main_type(main_type)
     log.info(
         f"[stream] mainType={main_type}, lat={lat}, lon={lon}, radius={radius}, "
         f"isRectangle={is_rectangle}, localOnly={local_only}, "
