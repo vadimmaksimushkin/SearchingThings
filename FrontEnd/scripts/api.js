@@ -2,6 +2,14 @@
 
 import {API_BASE} from './config.js';
 
+export async function fetchMainTypes() {
+  const response = await fetch(`${API_BASE}/main_types`);
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+  }
+  return response.json();
+}
+
 export async function searchByLocation(
     main_type, lat, lon, radius, is_rectangle, local_only, max_results) {
   const params = new URLSearchParams({

@@ -21,10 +21,8 @@
     <br/>
     <!-- //NOSONAR --> <!-- <label>Type: <input id="type-input" type="text" value="gym" /></label> -->
     <label>Type:
-      <select id="type-input">
-        <option value="gym">gym</option>
-        <option value="shopping mall">shopping mall</option>
-      </select>
+      <input id="type-input" type="text" list="type-options"/>
+      <datalist id="type-options"></datalist>
     </label>
     <br/>
     <label><input id="local-only" type="checkbox" checked="true" disabled="true"/> Local DB only</label>

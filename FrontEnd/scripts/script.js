@@ -1,7 +1,7 @@
 'use strict';
 
-import {SHOW_DEBUG, canonicalType, displayType} from './config.js';
-import {searchByLocationStream} from './api.js';
+import {LANG, SHOW_DEBUG, searchMainType} from './config.js';
+import {fetchMainTypes, searchByLocationStream} from './api.js';
 import {buildPlaceRow, buildPlaceCard} from './render.js';
 import {setupExport} from './export.js';
 
@@ -56,6 +56,13 @@ async function init() {
   const placeStore = new Map();
   const clusterer = new markerClusterer.MarkerClusterer({map: innerMap});
   let lastSearch = null;
+  const mainTypes = await fetchMainTypes();
+  const typeOptionsEl = document.getElementById('type-options');
+  for (const labels of Object.values(mainTypes)) {
+    const opt = document.createElement('option');
+    opt.value = labels[LANG];
+    typeOptionsEl.appendChild(opt);
+  }
 
   async function onMarkerClick(place_id) {
     const entry = placeStore.get(place_id);
@@ -286,9 +293,13 @@ async function init() {
     const is_rectangle = isRectangle.checked;
     const max_results = Number(maxResultsInput.value);
     const typedType = typeInput.value.trim();
-    const canonical = canonicalType(typedType);
-    const main_type = canonical ?? typedType;
-    const typeLabel = canonical ? displayType(canonical) : typedType;
+    const main_type = searchMainType(typedType, mainTypes);
+    if (!main_type) {
+      alert(`Unknown type: ${typedType}`);
+      return;
+    }
+    const typeLabel = mainTypes[main_type][LANG];
+    const canonical = main_type;
     const local_only = localOnlyInput.checked;
     const include_reviews = includeReviewsInput.checked;
     const include_photos = includePhotosInput.checked;
