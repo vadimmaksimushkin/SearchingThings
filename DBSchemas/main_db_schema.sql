@@ -2,9 +2,24 @@
 CREATE EXTENSION IF NOT EXISTS postgis;
 CREATE EXTENSION IF NOT EXISTS btree_gist;
 
+CREATE TABLE IF NOT EXISTS main_types (
+    main_type    TEXT PRIMARY KEY,
+    counter      INTEGER NOT NULL DEFAULT 10,  -- decrements on stage-3 live search; populate trigger at 0
+    populated_at TIMESTAMPTZ,                  -- NULL = not populated
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS main_type_labels (
+    main_type TEXT NOT NULL REFERENCES main_types(main_type) ON DELETE CASCADE,
+    lang_code TEXT NOT NULL
+        CHECK (length(lang_code) = 2 AND lang_code = lower(lang_code)),
+    label     TEXT NOT NULL,
+    PRIMARY KEY (main_type, lang_code)
+);
+
 CREATE TABLE IF NOT EXISTS places (
     place_id        TEXT PRIMARY KEY,
-    main_type       TEXT NOT NULL,           -- e.g. 'shopping_mall', 'gym'
+    main_type       TEXT NOT NULL REFERENCES main_types(main_type),
     name            TEXT,
     address         TEXT,
     phone           TEXT,
