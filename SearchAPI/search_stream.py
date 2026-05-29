@@ -25,38 +25,20 @@ from SearchAPI.models import (
     StreamEvent,
 )
 from SearchAPI.local_db_query import (
+    decrement_counter,
     fetch_photos_for_ids,
     fetch_reviews_for_ids,
     find_places_circle,
     find_places_rectangle,
-    upsert_photos,
-    upsert_place,
-    upsert_reviews,
+    upsert_place_bundle,
 )
-from SearchAPI.tasks import detach
-from constants import MAIN_TYPES
+from SearchAPI.populate import run_populate
+from SearchAPI.tasks import detach, detach_populate
 log = logging.getLogger(__name__)
 SEARCH_LANG_CODE: str = "es"
 
 def ndjson(event: BaseModel) -> bytes:
     return orjson.dumps(event.model_dump()) + b"\n"
-
-
-async def upsert_google_place(
-    pool: asyncpg.Pool, main_type: str, raw: dict[str, Any],
-) -> bool:
-    """Upsert place + reviews + photos in one transaction. True on success."""
-    place_id = raw.get("id", "")
-    try:
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                await upsert_place(conn, main_type, raw)
-                await upsert_reviews(conn, place_id, raw.get("reviews"))
-                await upsert_photos(conn, place_id, raw.get("photos"))
-    except Exception:
-        log.exception(f"[stage3] upsert failed for {place_id}")
-        return False
-    return True
 
 
 async def emit_google_events(
@@ -92,6 +74,7 @@ async def google_producer(
     queue: asyncio.Queue[StreamEvent],
     pool: asyncpg.Pool,
     main_type: str,
+    text_query: str,
     location: Location,
     is_rectangle: bool,
     streamed_ids: set[str],
@@ -99,7 +82,7 @@ async def google_producer(
     include_photos: bool) -> None:
     """Stage 3. Run textSearch with live fields, upsert to DB, emit events"""
     async def handle_one(raw: dict[str, Any]) -> None:
-        if not await upsert_google_place(pool, main_type, raw):
+        if not await upsert_place_bundle(pool, main_type, raw, "stage3"):
             return
         await emit_google_events(
             queue, raw, main_type, streamed_ids, include_reviews, include_photos,
@@ -108,10 +91,14 @@ async def google_producer(
         places = await google_text_search(
             location,
             is_rectangle,
-            text_query=MAIN_TYPES[main_type][SEARCH_LANG_CODE],
+            text_query=text_query,
             live=True,
         )
         log.info(f"[stage3] textSearch live: {len(places)} places returned")
+        remaining = await decrement_counter(pool, main_type)
+        if not remaining or remaining <= 0:
+            log.info(f"[stage3] counter reached 0 for {main_type!r}, firing populate")
+            detach_populate(run_populate(pool, main_type, text_query))
         await asyncio.gather(
             *(handle_one(raw) for raw in places if raw.get("id")),
             return_exceptions=True,
@@ -207,7 +194,8 @@ async def stage1_local(
 
 
 async def stage2_3_google(
-    pool: asyncpg.Pool, location: Location, main_type: str, is_rectangle: bool,
+    pool: asyncpg.Pool, location: Location, main_type: str, text_query: str,
+    is_rectangle: bool,
     streamed_ids: set[str], include_reviews: bool, include_photos: bool,
 ) -> AsyncIterator[bytes]:
     """Stage 2. Run textSearch IDs only query for new IDs
@@ -219,7 +207,7 @@ async def stage2_3_google(
         id_results = await google_text_search(
             location,
             is_rectangle,
-            text_query=MAIN_TYPES[main_type][SEARCH_LANG_CODE],
+            text_query=text_query,
             live=False
             )
     except Exception as e:
@@ -239,7 +227,7 @@ async def stage2_3_google(
     # stage 3
     queue: asyncio.Queue[StreamEvent] = asyncio.Queue()
     detach(google_producer(
-        queue, pool, main_type, location, is_rectangle,
+        queue, pool, main_type, text_query, location, is_rectangle,
         streamed_ids, include_reviews, include_photos,
     ))
     # If client disconnects this generator dies but the detached task
@@ -255,6 +243,7 @@ async def stream_search(
     pool: asyncpg.Pool,
     location: Location,
     main_type: str,
+    text_query: str,
     max_results: int,
     is_rectangle: bool,
     local_only: bool,
@@ -279,7 +268,7 @@ async def stream_search(
 
     if not local_only:
         async for chunk in stage2_3_google(
-            pool, location, main_type, is_rectangle, streamed_ids,
+            pool, location, main_type, text_query, is_rectangle, streamed_ids,
             include_reviews, include_photos,
         ):
             yield chunk
