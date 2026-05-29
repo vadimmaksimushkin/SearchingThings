@@ -94,11 +94,18 @@ def parse_published_at(s: str | None) -> datetime | None:
 async def paginated_search(
     session: aiohttp.ClientSession,
     text_query: str,
-    location_field: str,
-    location_payload: dict[str, Any],
     field_mask: str,
-    depth: int = MAX_PAGES) -> list[dict[str, Any]]:
+    location_field: str | None = None,
+    location_payload: dict[str, Any] | None = None,
+    depth: int = MAX_PAGES,
+    raise_on_error: bool = False) -> list[dict[str, Any]]:
+    """Paginated Places textSearch. When location_field/location_payload are
+    omitted the query is text-only (no location restriction/bias).
 
+    On HTTP >= 400 or a network error: by default logs and returns the partial
+    page list. When raise_on_error is True, raises instead — populate uses this
+    so a rate-limited/failed colonia is counted as a failure rather than
+    silently collapsing to an empty result."""
     headers = {
         "Content-Type": "application/json",
         "X-Goog-Api-Key": GOOGLE_MAPS_API_KEY,
@@ -108,8 +115,9 @@ async def paginated_search(
         "textQuery": text_query,
         "languageCode": "en",
         "pageSize": PAGE_SIZE,
-        location_field: location_payload,
     }
+    if location_field is not None and location_payload is not None:
+        payload[location_field] = location_payload
 
     results: list[dict[str, Any]] = []
     for page in range(depth):
@@ -117,11 +125,16 @@ async def paginated_search(
             async with session.post(PLACES_URL, headers=headers, json=payload) as resp:
                 if resp.status >= 400:
                     body = await resp.text()
-                    print(f"[HTTP {resp.status}] page={page + 1} {text_query!r}: {body[:500]}", file=sys.stderr)
+                    msg = f"[HTTP {resp.status}] page={page + 1} {text_query!r}: {body[:500]}"
+                    if raise_on_error:
+                        raise RuntimeError(msg)
+                    log.warning(msg)
                     break
                 data = await resp.json()
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-            print(f"[{type(e).__name__}] {text_query!r}: {e}", file=sys.stderr)
+            if raise_on_error:
+                raise
+            log.warning(f"[{type(e).__name__}] {text_query!r}: {e}")
             break
         results.extend(data.get("places", []))
         token = data.get("nextPageToken")
@@ -155,7 +168,9 @@ async def google_text_search(
     field_mask = LIVE_TEXT_SEARCH_MASK if live else IDS_TEXT_SEARCH_MASK
     async with aiohttp.ClientSession() as session:
         return await paginated_search(
-            session, text_query, location_restriction_type, location_payload, field_mask,
+            session, text_query, field_mask,
+            location_field=location_restriction_type,
+            location_payload=location_payload,
         )
 
 
