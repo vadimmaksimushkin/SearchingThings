@@ -1,5 +1,5 @@
-import asyncio
 import asyncpg
+import logging
 import orjson
 import sys
 from pathlib import Path
@@ -10,6 +10,9 @@ from credentials import PLACES_DB_URL, R2_PUBLIC_URL
 from SearchAPI.models import Photo, Place, PlaceDetail, Review
 from SearchAPI.google_fetch import Location, parse_published_at
 
+log = logging.getLogger(__name__)
+
+FALLBACK_LANG: str = "en"
 
 PLACE_COLUMNS = (
     "place_id, main_type, name, address, phone, website, "
@@ -171,6 +174,21 @@ ON CONFLICT (place_id, name) DO UPDATE SET
     raw                 = EXCLUDED.raw,
     is_preview          = EXCLUDED.is_preview
 """
+
+LOAD_LABELS_SQL = "SELECT main_type, lang_code, label FROM main_type_labels"
+
+LOAD_TYPES_SQL = "SELECT main_type FROM main_types ORDER BY main_type"
+
+DECREMENT_COUNTER_SQL = """
+UPDATE main_types
+SET counter = counter - 1
+WHERE main_type = $1 AND populated_at IS NULL AND counter > 0
+RETURNING counter
+"""
+
+MARK_POPULATED_SQL = "UPDATE main_types SET populated_at = NOW() WHERE main_type = $1"
+
+RESET_COUNTER_SQL = "UPDATE main_types SET counter = $2 WHERE main_type = $1"
 
 ORDER_BY = Literal["rating", "location"]
 
@@ -399,20 +417,75 @@ async def upsert_photos(
     await conn.executemany(UPSERT_PHOTO_SQL, rows)
 
 
-if __name__ == "__main__":
-    async def _main() -> None:
-        pool = await create_pool()
-        try:
-            CDMX_TEST = (19.412429, -99.1664120)
+async def upsert_place_bundle(
+    pool: asyncpg.Pool, main_type: str, raw: dict[str, Any], log_label: str = "upsert",
+) -> bool:
+    """Upsert one place + its reviews + photos in a single transaction.
+    Idempotent: a partial run followed by a retry re-upserts without
+    duplicating rows. Returns True on success, False (logged) on failure."""
+    place_id = raw.get("id", "")
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await upsert_place(conn, main_type, raw)
+                await upsert_reviews(conn, place_id, raw.get("reviews"))
+                await upsert_photos(conn, place_id, raw.get("photos"))
+    except Exception:
+        log.exception(f"[{log_label}] upsert failed for {place_id}")
+        return False
+    return True
 
-            rect_loc = Location.from_center_point(CDMX_TEST, 50_000, is_rectangle=True)
-            circle_loc = Location.from_center_point(CDMX_TEST, 50_000, is_rectangle=False)
-            rect_results = [p async for p in find_places_rectangle(pool, rect_loc, main_type="gym", max_results=2_000, order_by="rating")]
-            circle_results = [p async for p in find_places_circle(pool, circle_loc, main_type="gym", max_results=2_000, order_by="location")]
-            print(len(rect_results))
-            print(len(circle_results))
-            print("done")
-        finally:
-            await pool.close()
 
-    asyncio.run(_main())
+async def load_main_types(pool: asyncpg.Pool) -> dict[str, dict[str, str]]:
+    """Raise if any main_type lacks the FALLBACK_LANG label."""
+    # One transaction so both reads see the same snapshot: a type can never
+    # appear in type_rows without its label rows (which would raise below).
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            label_rows = await conn.fetch(LOAD_LABELS_SQL)
+            type_rows = await conn.fetch(LOAD_TYPES_SQL)
+
+    by_type: dict[str, dict[str, str]] = {}
+    all_langs: set[str] = set()
+    for row in label_rows:
+        by_type.setdefault(row["main_type"], {})[row["lang_code"]] = row["label"]
+        all_langs.add(row["lang_code"])
+
+    result: dict[str, dict[str, str]] = {}
+    for row in type_rows:
+        mt = row["main_type"]
+        labels = by_type.get(mt, {})
+        fallback = labels.get(FALLBACK_LANG)
+        if fallback is None:
+            log.error(
+                f"[load_main_types] {mt!r} missing {FALLBACK_LANG!r} label "
+                f"(has langs={sorted(labels)})"
+            )
+            raise RuntimeError(
+                f"main_type {mt!r} has no {FALLBACK_LANG!r} label"
+            )
+        for lang in all_langs - labels.keys():
+            labels[lang] = fallback
+        result[mt] = labels
+    return result
+
+
+async def decrement_counter(pool: asyncpg.Pool, main_type: str) -> int | None:
+    """Decrement counter and return counter.
+    - None: no row matched (already populated, or counter already at 0)"""
+    return await pool.fetchval(DECREMENT_COUNTER_SQL, main_type)
+
+
+async def mark_populated(
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
+    main_type: str,
+) -> None:
+    await conn.execute(MARK_POPULATED_SQL, main_type)
+
+
+async def reset_counter(
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
+    main_type: str,
+    value: int = 1,
+) -> None:
+    await conn.execute(RESET_COUNTER_SQL, main_type, value)
