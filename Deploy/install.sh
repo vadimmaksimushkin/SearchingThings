@@ -35,6 +35,13 @@ ln -sf "$DEPLOY_DIR/podman-compose.service" "$HOME/.config/systemd/user/${SERVIC
 systemctl --user daemon-reload
 systemctl --user enable "${SERVICE_NAME}.service"
 
+# Weekly podman cleanup — all hosts
+chmod +x "$REPO_ROOT/Deploy/podman-prune.sh"
+ln -sf "$REPO_ROOT/Deploy/podman-prune.service" "$HOME/.config/systemd/user/podman-prune.service"
+ln -sf "$REPO_ROOT/Deploy/podman-prune.timer"   "$HOME/.config/systemd/user/podman-prune.timer"
+systemctl --user daemon-reload
+systemctl --user enable --now podman-prune.timer
+
 # Daily database backup to S3 — places host only. Mirrors the symlink pattern
 # above: unit files live in the repo, symlinked into the user systemd dir; the
 # symlinks and the gitignored .env both survive the boot-time `git reset`.

@@ -1,0 +1,6 @@
+[Unit]
+Description=Weekly podman cleanup (dangling images, build cache)
+
+[Service]
+Type=oneshot
+ExecStart=%h/SearchingThings/Deploy/podman-prune.sh
