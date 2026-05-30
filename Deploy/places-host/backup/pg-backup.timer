@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily places backup to S3 at 12:00 UTC (06:00 GMT-6)
+
+[Timer]
+OnCalendar=*-*-* 12:00:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -34,4 +34,24 @@ mkdir -p "$HOME/.config/systemd/user"
 ln -sf "$DEPLOY_DIR/podman-compose.service" "$HOME/.config/systemd/user/${SERVICE_NAME}.service"
 systemctl --user daemon-reload
 systemctl --user enable "${SERVICE_NAME}.service"
+
+# Daily database backup to S3 — places host only. Mirrors the symlink pattern
+# above: unit files live in the repo, symlinked into the user systemd dir; the
+# symlinks and the gitignored .env both survive the boot-time `git reset`.
+if [[ "$HOST_TYPE" == "places" ]]; then
+    # AWS CLI v2 for the S3 backups, official self-contained installer
+    if ! /usr/local/bin/aws --version >/dev/null 2>&1; then
+        sudo dnf install -y unzip
+        curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o /tmp/awscliv2.zip
+        ( cd /tmp && unzip -oq awscliv2.zip && sudo ./aws/install --update )
+        rm -rf /tmp/aws /tmp/awscliv2.zip
+    fi
+
+    chmod +x "$DEPLOY_DIR/backup/pg-backup.sh" "$DEPLOY_DIR/backup/pg-restore.sh"
+    ln -sf "$DEPLOY_DIR/backup/pg-backup.service" "$HOME/.config/systemd/user/pg-backup.service"
+    ln -sf "$DEPLOY_DIR/backup/pg-backup.timer"   "$HOME/.config/systemd/user/pg-backup.timer"
+    systemctl --user daemon-reload
+    systemctl --user enable --now pg-backup.timer
+fi
+
 podman ps

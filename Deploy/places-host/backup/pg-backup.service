@@ -1,0 +1,9 @@
+[Unit]
+Description=Back up the places database to S3
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/SearchingThings/Deploy/places-host/.env
+ExecStart=%h/SearchingThings/Deploy/places-host/backup/pg-backup.sh
