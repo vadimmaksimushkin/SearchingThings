@@ -37,7 +37,7 @@ case "$SRC" in
     *)      KEY="${PREFIX}/${DB_NAME}-${SRC}.dump" ;;
 esac
 
-echo "Restoring ${KEY} -> database '${TARGET_DB}' (live '${DB_NAME}' DB is untouched)"
+echo "Restoring ${KEY} -> database '${TARGET_DB}' ('${DB_NAME}' DB is untouched)"
 
 TMP="$(mktemp /tmp/restore-XXXXXX.dump)"
 trap 'rm -f "$TMP"' EXIT
@@ -49,8 +49,3 @@ podman exec "$DB_CONTAINER" psql -U "$DB_USER" -c "CREATE DATABASE ${TARGET_DB};
 podman cp "$TMP" "${DB_CONTAINER}:/tmp/restore.dump"
 podman exec "$DB_CONTAINER" pg_restore -U "$DB_USER" -d "$TARGET_DB" --no-owner /tmp/restore.dump
 podman exec "$DB_CONTAINER" rm -f /tmp/restore.dump
-
-echo "Done. Inspect with:"
-echo "  podman exec ${DB_CONTAINER} psql -U ${DB_USER} -d ${TARGET_DB} -c '\\dt'"
-echo "Drop it when finished:"
-echo "  podman exec ${DB_CONTAINER} psql -U ${DB_USER} -c 'DROP DATABASE ${TARGET_DB};'"
