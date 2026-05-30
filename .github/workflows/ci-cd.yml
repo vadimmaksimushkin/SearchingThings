@@ -72,8 +72,13 @@ jobs:
             # BatchMode + ConnectTimeout: a powered-off host fails fast instead of
             # hanging or prompting. accept-new trusts the host key on first contact.
             if ssh -i "$key" -o BatchMode=yes -o ConnectTimeout=15 \
-                   -o StrictHostKeyChecking=accept-new \
-                   "$user@$host" 'bash -s' <<< "$(remote_script "$subdir")"; then
+                  -o StrictHostKeyChecking=accept-new \
+                  -o IdentitiesOnly=yes \
+                  -o IdentityFile="$key" \
+                  "$user@$host" 'bash -s' <<< "$(remote_script "$subdir")"; then
+            # if ssh -i "$key" -o BatchMode=yes -o ConnectTimeout=15 \
+            #        -o StrictHostKeyChecking=accept-new \
+            #        "$user@$host" 'bash -s' <<< "$(remote_script "$subdir")"; then
               echo "$label: updated"
               echo "::endgroup::"; return 0
             fi
