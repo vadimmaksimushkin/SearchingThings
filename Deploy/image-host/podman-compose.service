@@ -6,8 +6,13 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-WorkingDirectory=/home/ec2-user/ScrapingShoppingMalls/Deploy/image-host
-ExecStart=/usr/local/bin/podman-compose up -d
+WorkingDirectory=%h/SearchingThings/Deploy/image-host
+# Self-update to latest main before starting. The leading `-` makes these
+# best-effort: if GitHub is unreachable at boot, the stack still starts on the
+# code already on disk instead of failing. Gitignored files (.env) are untouched.
+ExecStartPre=-/usr/bin/git -C %h/SearchingThings fetch --prune origin main
+ExecStartPre=-/usr/bin/git -C %h/SearchingThings reset --hard origin/main
+ExecStart=/usr/local/bin/podman-compose up -d --build
 ExecStop=/usr/local/bin/podman-compose down
 TimeoutStartSec=600
 

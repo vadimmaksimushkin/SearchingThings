@@ -1,6 +1,7 @@
 !.gitignore
 !__init__.py
 .*/
+!.github/
 __*__
 /requirements.txt
 /DBBackups

@@ -1,0 +1,12 @@
+# Ruff config for CI (and local `ruff check .`).
+#
+# We intentionally keep Ruff's DEFAULT rule set (E4/E7/E9 + F = real errors and
+# pyflakes, e.g. syntax errors, undefined names, unused imports). The codebase
+# passes this today, so CI is green from day one. To make CI stricter later,
+# add a `[lint] select = [...]` block (e.g. "I" for import sorting, "UP" for
+# pyupgrade) — that's an opt-in, deliberate tightening.
+
+target-version = "py312"
+
+# Ruff already skips .venv etc.; list anything else CI shouldn't lint here.
+extend-exclude = ["DBSchemas", "DBBackups", "DataInJSON"]

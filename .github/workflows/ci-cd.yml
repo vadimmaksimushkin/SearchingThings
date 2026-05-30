@@ -1,0 +1,91 @@
+name: CI / Deploy
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install ruff
+        run: pip install 'ruff>=0.15.15'
+      - name: Ruff check
+        run: ruff check .
+
+  deploy:
+    name: Deploy (m1 required; m2/m3 best-effort)
+    needs: lint                       # don't deploy if the lint job failed
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH into each reachable host and update its stack
+        env:
+          SSH_USER_M1: ${{ secrets.SSH_USER_M1 }}
+          SSH_USER_M2: ${{ secrets.SSH_USER_M2 }}
+          SSH_USER_M3: ${{ secrets.SSH_USER_M3 }}
+          HOST_M1: ${{ secrets.HOST_M1 }}      # places-host
+          HOST_M2: ${{ secrets.HOST_M2 }}      # queue-host
+          HOST_M3: ${{ secrets.HOST_M3 }}      # image-host
+          SSH_KEY_M1: ${{ secrets.SSH_PRIVATE_KEY_M1 }}
+          SSH_KEY_M2: ${{ secrets.SSH_PRIVATE_KEY_M2 }}
+          SSH_KEY_M3: ${{ secrets.SSH_PRIVATE_KEY_M3 }}
+        run: |
+          set -euo pipefail
+
+          # One private key per host, each with the strict perms ssh requires.
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY_M1" > ~/.ssh/m1 && chmod 600 ~/.ssh/m1
+          printf '%s\n' "$SSH_KEY_M2" > ~/.ssh/m2 && chmod 600 ~/.ssh/m2
+          printf '%s\n' "$SSH_KEY_M3" > ~/.ssh/m3 && chmod 600 ~/.ssh/m3
+
+          # The update script that runs ON the host (build happens there, not on
+          # the runner). $1 is that host's compose subdir.
+          remote_script() {
+            printf '%s\n' \
+              'set -euo pipefail' \
+              'cd ~/SearchingThings' \
+              'git fetch --prune origin main' \
+              'git reset --hard origin/main' \
+              "cd $1" \
+              'podman-compose up -d --build' \
+              'podman image prune -f'
+          }
+
+          # deploy <label> <keyfile> <user> <host> <compose-subdir> <required|optional>
+          deploy() {
+            local label="$1" key="$2" user="$3" host="$4" subdir="$5" mode="$6"
+            echo "::group::$label ($host)"
+            if [ -z "$host" ]; then
+              echo "$label: no host secret set — skipping"
+              echo "::endgroup::"; return 0
+            fi
+            # BatchMode + ConnectTimeout: a powered-off host fails fast instead of
+            # hanging or prompting. accept-new trusts the host key on first contact.
+            if ssh -i "$key" -o BatchMode=yes -o ConnectTimeout=15 \
+                   -o StrictHostKeyChecking=accept-new \
+                   "$user@$host" 'bash -s' <<< "$(remote_script "$subdir")"; then
+              echo "$label: updated"
+              echo "::endgroup::"; return 0
+            fi
+            echo "::endgroup::"
+            if [ "$mode" = required ]; then
+              echo "::error::$label ($host) is required but the deploy failed"
+              return 1
+            fi
+            echo "::warning::$label ($host) unreachable/failed — skipped (likely powered off)"
+            return 0
+          }
+
+          deploy m1 ~/.ssh/m1 "$SSH_USER_M1" "$HOST_M1" Deploy/places-host required
+          deploy m2 ~/.ssh/m2 "$SSH_USER_M2" "$HOST_M2" Deploy/queue-host  optional
+          deploy m3 ~/.ssh/m3 "$SSH_USER_M3" "$HOST_M3" Deploy/image-host  optional
