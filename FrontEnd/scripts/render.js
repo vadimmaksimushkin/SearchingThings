@@ -77,6 +77,15 @@ export function buildPlaceRow(place) {
   }
   row.appendChild(previewCell);
 
+  const structuredCell = document.createElement('div');
+  structuredCell.className = 'structured-cell';
+  if (place.structured_content) {
+    const pre = document.createElement('pre');
+    pre.textContent = JSON.stringify(place.structured_content, null, 2);
+    structuredCell.appendChild(pre);
+  }
+  row.appendChild(structuredCell);
+
   return row;
 }
 
