@@ -57,7 +57,7 @@ jobs:
               'git fetch --prune origin main' \
               'git reset --hard origin/main' \
               "cd $1" \
-              'podman-compose up -d --build' \
+              'podman-compose up -d --build --force-recreate' \
               'podman image prune -f'
           }
 
