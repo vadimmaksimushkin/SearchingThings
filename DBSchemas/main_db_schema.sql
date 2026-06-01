@@ -72,11 +72,25 @@ CREATE TABLE IF NOT EXISTS photos (
 CREATE UNIQUE INDEX IF NOT EXISTS photos_one_preview_per_place
     ON photos (place_id) WHERE is_preview;
 
-CREATE VIEW IF NOT EXISTS places_with_preview AS
+CREATE TABLE IF NOT EXISTS scraped_results (
+    place_id              TEXT PRIMARY KEY REFERENCES places(place_id) ON DELETE CASCADE,
+    scraped_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    emails                TEXT[],
+    resource_content_html JSONB,         -- {page_main:…, page_about:…} full original page dump
+    structured_content    JSONB          -- {description, services, catalog}
+);
+
+-- Exposes the light structured_content only; heavy resource_content_html is
+-- intentionally left off the view. Never SELECT * this view in list queries —
+-- name columns so the scraped_results join is eliminated when content isn't read.
+CREATE OR REPLACE VIEW places_with_preview AS
 SELECT
     p.*,
-    ph.bucket_key AS preview_photo
+    ph.bucket_key AS preview_photo,
+    sr.structured_content
 FROM places p
 LEFT JOIN photos ph
        ON ph.place_id = p.place_id
-      AND ph.is_preview;
+      AND ph.is_preview
+LEFT JOIN scraped_results sr
+       ON sr.place_id = p.place_id;

@@ -9,12 +9,14 @@ CREATE TABLE IF NOT EXISTS scrape_queue (
 );
 
 CREATE TABLE IF NOT EXISTS success (
-    place_id      TEXT NOT NULL,
-    website       TEXT NOT NULL,
-    scraped_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    emails        TEXT[],                          -- NULL = scraped, none found
-    final_website TEXT NOT NULL,
-    attempts      INTEGER NOT NULL DEFAULT 1,
+    place_id              TEXT NOT NULL,
+    website               TEXT NOT NULL,
+    scraped_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    emails                TEXT[],                  -- NULL = scraped, none found
+    final_website         TEXT NOT NULL,
+    resource_content_html JSONB,                   -- full original page dump (scraper writes this)
+    structured_content    JSONB,                   -- parsed content
+    attempts              INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY (place_id, website)
 );
 
