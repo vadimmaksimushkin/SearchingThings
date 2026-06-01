@@ -6,10 +6,11 @@ Two layers:
     with a `type` discriminator for the NDJSON streaming endpoint.
 """
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
+# FIXME: add main types models
 # Domain models
 class Place(BaseModel):
     place_id: str
@@ -26,6 +27,7 @@ class Place(BaseModel):
     category: list[str] | None = None
     emails: list[str] | None = None
     preview_photo: str | None = None
+    structured_content: dict[str, Any] | None = None  # {description, services, catalog}
 
 
 class Review(BaseModel):

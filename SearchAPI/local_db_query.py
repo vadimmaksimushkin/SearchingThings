@@ -18,7 +18,7 @@ PLACE_COLUMNS = (
     "place_id, main_type, name, address, phone, website, "
     "rating, rating_count, "
     "ST_Y(geog::geometry) AS latitude, ST_X(geog::geometry) AS longitude, "
-    "plus_code, category, emails, preview_photo"
+    "plus_code, category, emails, preview_photo, structured_content"
 )
 
 ORDER_BY_RATING = """
@@ -78,6 +78,17 @@ def add_preview_link_to_place(row_dict: dict[str, Any]) -> dict[str, Any]:
     bucket_key = row_dict.get("preview_photo")
     if bucket_key:
         row_dict["preview_photo"] = f"{R2_PUBLIC_URL}/{bucket_key}"
+    return row_dict
+
+
+# FIXME: remove mock
+MOCK_STRUCTURED_CONTENT: dict[str, str] = dict.fromkeys(
+    ("description", "catalog", "services", "testing_null"), "testing null"
+)
+
+
+def add_mock_structured_content(row_dict: dict[str, Any]) -> dict[str, Any]:
+    row_dict["structured_content"] = MOCK_STRUCTURED_CONTENT
     return row_dict
 
 
@@ -247,7 +258,8 @@ async def find_places_rectangle(
                     prefetch=prefetch,
                 )
             async for row in cursor:
-                yield Place(**add_preview_link_to_place(dict(row)))
+                # yield Place(**add_preview_link_to_place(dict(row)))
+                yield Place(**add_mock_structured_content(add_preview_link_to_place(dict(row))))
 
 
 async def find_places_circle(
@@ -270,7 +282,8 @@ async def find_places_circle(
                 query, main_type, center_lon, center_lat, radius, max_results,
                 prefetch=prefetch,
             ):
-                yield Place(**add_preview_link_to_place(dict(row)))
+                # yield Place(**add_preview_link_to_place(dict(row)))
+                yield Place(**add_mock_structured_content(add_preview_link_to_place(dict(row))))
 
 
 async def fetch_place_detail(pool: asyncpg.Pool, place_id: str) -> PlaceDetail | None:
@@ -282,7 +295,8 @@ async def fetch_place_detail(pool: asyncpg.Pool, place_id: str) -> PlaceDetail |
         photo_rows = await conn.fetch(PHOTOS_QUERY, place_id)
 
     return PlaceDetail(
-        **add_preview_link_to_place(dict(place_row)),
+        # **add_preview_link_to_place(dict(place_row)),
+        **add_mock_structured_content(add_preview_link_to_place(dict(place_row))),
         reviews=[Review(**dict(row)) for row in review_rows],
         photos=[Photo(**add_url_to_photo(dict(row))) for row in photo_rows],
     )
