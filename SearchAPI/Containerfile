@@ -6,9 +6,9 @@ COPY SearchAPI/requirements-searchapi.txt /app/
 RUN pip install --no-cache-dir -r requirements-searchapi.txt
 
 COPY credentials.py constants.py places.py /app/
-COPY SearchAPI/__init__.py SearchAPI/main.py SearchAPI/models.py \
-     SearchAPI/google_fetch.py SearchAPI/local_db_query.py \
-     SearchAPI/search_stream.py SearchAPI/tasks.py /app/SearchAPI/
+# Copy the whole package; .dockerignore (repo root) keeps the Containerfile
+# and __pycache__ out so we never silently ship a missing module again.
+COPY SearchAPI/ /app/SearchAPI/
 
 EXPOSE 8000
 
