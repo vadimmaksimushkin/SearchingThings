@@ -49,17 +49,11 @@ services:
     mem_limit: 1700m
     memswap_limit: 1700m
     environment:
-      GOOGLE_MAPS_API_KEY: ""
-      PLACES_DB_URL: ${PLACES_DB_URL}
       QUEUE_DB_URL: postgresql://postgres:${POSTGRES_PASSWORD}@pg_queue:5432/queue
-      IMAGE_QUEUE_DB_URL: ""
-      R2_USER_TOKEN: ""
-      R2_ACCOUNT_ID: ""
-      R2_ACCESS_KEY: ""
-      R2_SECRET_ACCESS_KEY: ""
-      R2_BUCKET: ""
-      R2_PUBLIC_URL: ""
-
+      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID}
+      R2_ACCESS_KEY: ${R2_ACCESS_KEY}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY}
+      R2_PAGES_BUCKET: ${R2_PAGES_BUCKET}
     depends_on:
       pg_queue:
         condition: service_healthy
