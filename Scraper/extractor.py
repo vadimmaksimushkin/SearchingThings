@@ -2,7 +2,7 @@
 Extractor that runs two ticks in a loop. DB pg_places is requiered, will
 function with one queue db down
 
-Email tick:
+Website tick:
     push: scan new (place_id, website) pairs and add them to queue
     pull: scan scraped emails from queue.success and add new to places.emails
 Image tick:
@@ -35,26 +35,27 @@ CONNECTION_ERRORS = (
     asyncio.TimeoutError,
 )
 
-FETCH_EMAIL_CANDIDATES_SQL = """
+FETCH_SEED_CANDIDATES_SQL = """
 SELECT place_id, website, fetched_at FROM places
 WHERE website IS NOT NULL AND website <> ''
   AND fetched_at > $1
 ORDER BY fetched_at
 """
-FETCH_KNOWN_EMAIL_SQL = """
-SELECT place_id, website FROM scrape_queue WHERE place_id = ANY($1)
-UNION ALL SELECT place_id, website FROM success WHERE place_id = ANY($1)
-UNION ALL SELECT place_id, website FROM error   WHERE place_id = ANY($1)
+FETCH_KNOWN_SEED_SQL = """
+SELECT place_id, site_domain FROM scrape_queue WHERE place_id = ANY($1) AND page_uri = ''
+UNION ALL SELECT place_id, site_domain FROM success WHERE place_id = ANY($1) AND page_uri = ''
+UNION ALL SELECT place_id, site_domain FROM error   WHERE place_id = ANY($1) AND page_uri = ''
 """
-INSERT_EMAIL_QUEUE_SQL = """
-INSERT INTO scrape_queue (place_id, website) VALUES ($1, $2)
-ON CONFLICT (place_id) DO UPDATE SET
-    website = EXCLUDED.website,
-    added_at = now(),
-    attempts = 0
+INSERT_SEED_QUEUE_SQL = """
+INSERT INTO scrape_queue (place_id, site_domain, page_uri) VALUES ($1, $2, '')
+ON CONFLICT (place_id, site_domain, page_uri) DO NOTHING
 """
-READ_EMAIL_SCAN_WATERMARK_SQL = "SELECT last_scanned_at FROM extractor_state WHERE id = 1"
-UPDATE_EMAIL_SCAN_WATERMARK_SQL = "UPDATE extractor_state SET last_scanned_at = $1 WHERE id = 1"
+INSERT_SEED_PLACE_URI_SQL = """
+INSERT INTO place_uri (place_id, site_domain) VALUES ($1, $2)
+ON CONFLICT (place_id, site_domain) DO NOTHING
+"""
+READ_SEED_SCAN_WATERMARK_SQL = "SELECT last_scanned_at FROM extractor_state WHERE id = 1"
+UPDATE_SEED_SCAN_WATERMARK_SQL = "UPDATE extractor_state SET last_scanned_at = $1 WHERE id = 1"
 READ_EMAIL_SYNC_WATERMARK_SQL = "SELECT last_emails_synced_at FROM extractor_state WHERE id = 1"
 UPDATE_EMAIL_SYNC_WATERMARK_SQL = "UPDATE extractor_state SET last_emails_synced_at = $1 WHERE id = 1"
 FETCH_SUCCESS_EMAILS_SQL = """
@@ -69,17 +70,6 @@ SET emails = ARRAY(
 )
 WHERE place_id = $1
 """
-
-# first scrape preview images
-# FETCH_IMAGE_CANDIDATES_SQL = """
-# SELECT place_id, name AS photo_name, google_maps_uri
-# FROM photos
-# WHERE is_preview = TRUE
-#   AND bucket_key IS NULL
-#   AND google_maps_uri IS NOT NULL
-#   AND google_maps_uri <> ''
-# ORDER BY place_id, name
-# """
 FETCH_IMAGE_CANDIDATES_SQL = """
 SELECT place_id, name AS photo_name, google_maps_uri
 FROM photos
@@ -113,36 +103,45 @@ WHERE place_id = $1 AND name = $2
 log = logging.getLogger(__name__)
 
 
-def normalize_website(url: str) -> str | None:
-    """Add scheme if missing, lowercase host. Path/query/fragment untouched."""
+def normalize_site_root(url: str) -> str | None:
+    """Add scheme if missing, lowercase host. Path/query/fragment untouched"""
     url = url.strip()
     if not url:
         return None
     if "://" not in url:
         url = "https://" + url.lstrip("/")
     p = urlparse(url)
-    return urlunparse((p.scheme, p.netloc.lower(), p.path, p.params, p.query, p.fragment))
+    scheme = p.scheme.lower()
+    host = p.hostname or "" # urlparse lowercases hostname, drops userinfo
+    if not host:
+        return None
+    port = p.port
+    if port and not ((scheme == "http" and port == 80) or (scheme == "https" and port == 443)):
+        host = f"{host}:{port}"
+    path = p.path.rstrip("/") or "/"
+    return urlunparse((scheme, host, path, "", "", ""))
 
 
-# email tick
-async def insert_new_email_candidates(
+# website tick
+async def seed_new_roots(
     queue_pool: asyncpg.Pool, batch: list[asyncpg.Record]
     ) -> int:
-    """Filter batch against pg_queue known set; INSERT new (place_id, website)"""
+    """Filter batch against pg_queue known set; INSERT new places"""
     place_ids = [row["place_id"] for row in batch]
-    known_rows = await queue_pool.fetch(FETCH_KNOWN_EMAIL_SQL, place_ids)
-    known: set[tuple[str, str]] = {(row["place_id"], row["website"]) for row in known_rows}
+    known_rows = await queue_pool.fetch(FETCH_KNOWN_SEED_SQL, place_ids)
+    known: set[tuple[str, str]] = {(r["place_id"], r["site_domain"]) for r in known_rows}
     to_insert: list[tuple[str, str]] = []
     for row in batch:
-        website = normalize_website(row["website"])
-        if not website or ((row["place_id"], website) in known):
+        site_domain = normalize_site_root(row["website"])
+        if not site_domain or (row["place_id"], site_domain) in known:
             continue
-        to_insert.append((row["place_id"], website))
+        to_insert.append((row["place_id"], site_domain))
     if not to_insert:
         return 0
     async with queue_pool.acquire() as conn:
         async with conn.transaction():
-            await conn.executemany(INSERT_EMAIL_QUEUE_SQL, to_insert)
+            await conn.executemany(INSERT_SEED_QUEUE_SQL, to_insert)
+            await conn.executemany(INSERT_SEED_PLACE_URI_SQL, to_insert)
     return len(to_insert)
 
 
@@ -157,11 +156,11 @@ async def merge_emails(places_pool: asyncpg.Pool, batch: list[asyncpg.Record]) -
     return len(rows)
 
 
-async def email_push(
+async def seed_push(
     places_pool: asyncpg.Pool, queue_pool: asyncpg.Pool, batch_size: int,
     ) -> None:
-    last_scanned_at: datetime = await queue_pool.fetchval(READ_EMAIL_SCAN_WATERMARK_SQL)
-    log.info(f"email push: last_scanned_at={last_scanned_at}")
+    last_scanned_at: datetime = await queue_pool.fetchval(READ_SEED_SCAN_WATERMARK_SQL)
+    log.info(f"seed push: last_scanned_at={last_scanned_at}")
 
     last_fetched_at: datetime | None = None
     total_scanned = 0
@@ -169,27 +168,27 @@ async def email_push(
 
     async with places_pool.acquire() as conn:
         async with conn.transaction():
-            cursor = conn.cursor(FETCH_EMAIL_CANDIDATES_SQL, last_scanned_at, prefetch=batch_size)
+            cursor = conn.cursor(FETCH_SEED_CANDIDATES_SQL, last_scanned_at, prefetch=batch_size)
             buffer: list[asyncpg.Record] = []
             async for row in cursor:
                 buffer.append(row)
                 if len(buffer) >= batch_size:
-                    total_inserted += await insert_new_email_candidates(queue_pool, buffer)
+                    total_inserted += await seed_new_roots(queue_pool, buffer)
                     total_scanned += len(buffer)
                     last_fetched_at = buffer[-1]["fetched_at"]
-                    log.info(f"  email push: scanned={total_scanned} inserted={total_inserted}")
+                    log.info(f"  seed push: scanned={total_scanned} inserted={total_inserted}")
                     buffer.clear()
             if buffer:
-                total_inserted += await insert_new_email_candidates(queue_pool, buffer)
+                total_inserted += await seed_new_roots(queue_pool, buffer)
                 total_scanned += len(buffer)
                 last_fetched_at = buffer[-1]["fetched_at"]
-                log.info(f"  email push: scanned={total_scanned} inserted={total_inserted}")
+                log.info(f"  seed push: scanned={total_scanned} inserted={total_inserted}")
 
     # equals that extractor performed the task whether successfully or not
     if last_fetched_at is not None:
-        await queue_pool.execute(UPDATE_EMAIL_SCAN_WATERMARK_SQL, last_fetched_at)
-        log.info(f"email push: watermark -> {last_fetched_at}")
-    log.info(f"email push summary: scanned={total_scanned} inserted={total_inserted}")
+        await queue_pool.execute(UPDATE_SEED_SCAN_WATERMARK_SQL, last_fetched_at)
+        log.info(f"seed push: watermark -> {last_fetched_at}")
+    log.info(f"seed push summary: scanned={total_scanned} inserted={total_inserted}")
 
 
 async def email_pull(
@@ -328,19 +327,19 @@ async def try_create_pool(url: str, name: str) -> asyncpg.Pool | None:
         return None
 
 
-async def run_email_tick(
+async def run_website_tick(
     places_pool: asyncpg.Pool, queue_pool: asyncpg.Pool | None, batch_size: int,
 ) -> None:
     if queue_pool is None:
-        log.info("queue pool unavailable; email tick skipped")
+        log.info("queue pool unavailable; website tick skipped")
         return
     try:
-        await email_push(places_pool, queue_pool, batch_size)
+        await seed_push(places_pool, queue_pool, batch_size)
         await email_pull(places_pool, queue_pool, batch_size)
     except CONNECTION_ERRORS as e:
-        log.warning(f"email tick skipped: {e!r}")
+        log.warning(f"website tick skipped: {e!r}")
     except Exception:
-        log.exception("email tick failed")
+        log.exception("website tick failed")
 
 
 async def run_image_tick(
@@ -386,7 +385,7 @@ async def run_service(batch_size: int, interval: int) -> None:
             if places_pool is None:
                 log.warning("places pool unavailable; skipping all ticks this cycle")
             else:
-                await run_email_tick(places_pool, queue_pool, batch_size)
+                await run_website_tick(places_pool, queue_pool, batch_size)
                 await run_image_tick(places_pool, image_queue_pool, batch_size)
 
             await asyncio.sleep(float(interval))
@@ -411,7 +410,7 @@ async def main(batch_size: int, interval: int | None) -> None:
             places_pool = await asyncpg.create_pool(PLACES_DB_URL, min_size=1, max_size=2)
             queue_pool = await asyncpg.create_pool(QUEUE_DB_URL, min_size=1, max_size=2)
             image_queue_pool = await asyncpg.create_pool(IMAGE_QUEUE_DB_URL, min_size=1, max_size=2)
-            await run_email_tick(places_pool, queue_pool, batch_size)
+            await run_website_tick(places_pool, queue_pool, batch_size)
             await run_image_tick(places_pool, image_queue_pool, batch_size)
         finally:
             for pool in (places_pool, queue_pool, image_queue_pool):
