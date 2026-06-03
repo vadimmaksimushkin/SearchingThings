@@ -5,14 +5,14 @@ Finds emails and uploads page html to R2 bucket. Later they will
 be parsed using a separated parser to find information categories
 like `description`, `services`, `catalog` and others
 """
-# FIXME: (optional) Add better headers, persistent context and better UA rotation
-# FIXME: Add SeleniumBase for anti-bot and anti-captcha bypass
+# FIXME: handle one shared persistent SB context
+# FIXME: set navigation delay to opening page_uri
+# with same site_domain on 1 machine
 # FIXME: handle sitemap and robots.txt
 import asyncio
 import html as html_lib
 import re
 import sys
-import random
 import asyncpg
 import aioboto3  # pyright: ignore[reportMissingTypeStubs]
 import logging
@@ -26,12 +26,13 @@ from playwright.async_api import (
     Browser,
     BrowserContext,
     Page,
+    Playwright,
     Response,
     Route,
     TimeoutError as PWTimeout,
     async_playwright,
 )
-from playwright_stealth import Stealth  # pyright: ignore[reportMissingTypeStubs]
+from seleniumbase import cdp_driver  # pyright: ignore[reportMissingTypeStubs]
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -46,6 +47,7 @@ from constants import ASSET_EXTS
 
 WORKER_COUNT = 3
 MAX_ATTEMPTS = 3
+PAGES_PER_BROWSER = 160  # recycle the whole SB+Playwright browser after this many pages
 LOCK_DURATION = timedelta(minutes=5.0)
 POLL_INTERVAL_S = 1.0
 PAGE_TIMEOUT_MS = 15_000
@@ -53,13 +55,10 @@ EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
 
 R2_ENDPOINT = f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 
-# Neutral modern Chrome UAs (Linux + macOS). No email, no "scraping" tokens.
-USER_AGENTS = (
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
-)
+# SeleniumBase picks a realistic UA matching the launched Chrome, so we no longer
+# rotate fake UA strings. We only pin the locale/timezone fingerprint at launch.
+BROWSER_LANG = "en-US"
+BROWSER_TIMEZONE = "America/Mexico_City"
 
 CONNECTION_ERRORS = (
     asyncpg.PostgresConnectionError,
@@ -180,6 +179,18 @@ class ScrapeResult:
     reason: str = "ok"
 
 
+@dataclass
+class GenerationLimit:
+    limit: int
+    exhausted: asyncio.Event = field(default_factory=asyncio.Event)
+    _count: int = 0
+
+    def record_page(self) -> None:
+        self._count += 1
+        if self._count >= self.limit:
+            self.exhausted.set()
+
+
 async def block_heavy_assets(route: Route) -> None:
     request = route.request
     if request.resource_type in BLOCKED_RESOURCE_TYPES:
@@ -280,24 +291,16 @@ async def discover_links(page: Page, site_domain: str) -> set[str]:
 
 
 async def process_one_job(
-    browser: Browser,
+    context: BrowserContext,
     bucket: aioboto3.Session,
     job: ClaimedJob
 ) -> ScrapeResult:
     """Scrape one page: get final URL, scroll, regex emails, upload HTML to R2,
-    same-site links. Has fresh context per page"""
+    same-site links. Opens one page (tab) on the shared persistent SB context;
+    stealth and UA come from the SeleniumBase browser, not from per-page setup."""
     target = job.page_uri or job.site_domain
-    context: BrowserContext = await browser.new_context(
-        user_agent=random.choice(USER_AGENTS),
-        locale="en-US",
-        timezone_id="America/Mexico_City",
-        viewport={"width": 1366, "height": 768},
-    )
-    await context.route("**/*", block_heavy_assets)
+    page = await context.new_page()
     try:
-        page = await context.new_page()
-        await Stealth().apply_stealth_async(page)
-
         try:
             response: Response | None = await page.goto(
                 target, timeout=PAGE_TIMEOUT_MS, wait_until="domcontentloaded"
@@ -352,7 +355,10 @@ async def process_one_job(
             reason="ok",
         )
     finally:
-        await context.close()
+        try:
+            await page.close()
+        except Exception as e:
+            log.info(f"page close skipped: {e!r}")
 
 
 async def claim_and_log_start(pool: asyncpg.Pool) -> ClaimedJob | None:
@@ -492,7 +498,7 @@ async def claim_with_retry(
 
 async def handle_one_job(
     worker_id: int,
-    browser: Browser,
+    context: BrowserContext,
     bucket: aioboto3.Session,
     job: ClaimedJob,
     pool: asyncpg.Pool,
@@ -502,7 +508,7 @@ async def handle_one_job(
     """Scrape one claimed page, record, log. Revert on shutdown"""
     log.info(f"w{worker_id} claim {job.place_id} {job.page_uri or '<root>'} attempt={job.attempts}")
     try:
-        result = await process_one_job(browser, bucket, job)
+        result = await process_one_job(context, bucket, job)
     except Exception as e:
         result = ScrapeResult(success=False, reason=f"unhandled: {e!r}")
 
@@ -516,20 +522,22 @@ async def handle_one_job(
 
 async def worker_loop(
     worker_id: int,
-    browser: Browser,
+    context: BrowserContext,
     bucket: aioboto3.Session,
     pool: asyncpg.Pool,
     shutdown_event: asyncio.Event,
+    gen: GenerationLimit,
     poll_interval_s: float,
     max_attempts: int,
 ) -> None:
-    while not shutdown_event.is_set():
+    while not shutdown_event.is_set() and not gen.exhausted.is_set():
         job = await claim_with_retry(pool, shutdown_event, poll_interval_s)
         if job is None:
             continue
         await handle_one_job(
-            worker_id, browser, bucket, job, pool, shutdown_event, max_attempts
+            worker_id, context, bucket, job, pool, shutdown_event, max_attempts
         )
+        gen.record_page()
     log.info(f"w{worker_id} exit")
 
 
@@ -562,23 +570,70 @@ def shutdown_handler(shutdown_event: asyncio.Event) -> None:
         loop.add_signal_handler(sig, on_shutdown)
 
 
+async def run_browser_generation(
+    p: Playwright,
+    bucket: aioboto3.Session,
+    pool: asyncpg.Pool,
+    shutdown_event: asyncio.Event,
+    worker_count: int,
+    poll_interval_s: float,
+    max_attempts: int,
+    pages_per_browser: int,
+    headless: bool,
+    use_xvfb: bool,
+) -> None:
+    driver = await cdp_driver.start_async(  # pyright: ignore[reportUnknownMemberType]
+        headless=headless and not use_xvfb,
+        xvfb=use_xvfb or None,
+        lang=BROWSER_LANG,
+        tzone=BROWSER_TIMEZONE,
+    )
+    try:
+        browser: Browser = await p.chromium.connect_over_cdp(driver.get_endpoint_url())
+        try:
+            context = browser.contexts[0] if browser.contexts else await browser.new_context()
+            await context.route("**/*", block_heavy_assets)
+            gen = GenerationLimit(limit=pages_per_browser)
+            await asyncio.gather(*(
+                worker_loop(
+                    i, context, bucket, pool, shutdown_event,
+                    gen, poll_interval_s, max_attempts,
+                )
+                for i in range(worker_count)
+            ))
+        finally:
+            try:
+                await browser.close()
+            except Exception as e:
+                log.info(f"playwright disconnect skipped: {e!r}")
+    finally:
+        try:
+            driver.stop()  # pyright: ignore[reportUnknownMemberType]
+        except Exception as e:
+            log.info(f"driver stop skipped: {e!r}")
+
+
 async def run_service(
     headless: bool = True,
     worker_count: int = WORKER_COUNT,
     poll_interval_s: float = POLL_INTERVAL_S,
     max_attempts: int = MAX_ATTEMPTS,
+    pages_per_browser: int = PAGES_PER_BROWSER,
+    use_xvfb: bool = False,
     respect_sitemap: bool = False,
     respect_robots: bool = False,
 ) -> None:
-    """Run workers until SIGTERM/SIGINT. One shared browser + R2 client. Each
-    worker scrapes pages in its own context"""
+    """Run workers until SIGTERM/SIGINT. Recycles the SeleniumBase+Playwright
+    browser every `pages_per_browser` pages; the R2 client and DB pool are shared
+    across generations. Each worker scrapes pages on one shared persistent
+    context (no per-page context isolation anymore)."""
     if respect_sitemap or respect_robots:
         log.warning("respect_sitemap/respect_robots are not honored yet; crawling normally")
 
     shutdown_event = asyncio.Event()
     shutdown_handler(shutdown_event)
 
-    log.info(f"Service started, workers={worker_count}")
+    log.info(f"Service started, workers={worker_count}, recycle every {pages_per_browser} pages")
     pool = await open_pool_with_retry(worker_count, poll_interval_s, shutdown_event)
     if pool is None:
         log.info("Shutdown clean")
@@ -594,20 +649,18 @@ async def run_service(
             region_name="auto",
         ) as bucket:  # pyright: ignore
             async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=headless)
-                try:
-                    await asyncio.gather(*(
-                        worker_loop(
-                            i, browser, bucket, pool, shutdown_event, # pyright: ignore[reportUnknownArgumentType]
-                            poll_interval_s, max_attempts,
-                        )
-                        for i in range(worker_count)
-                    ))
-                finally:
+                while not shutdown_event.is_set():
                     try:
-                        await browser.close()
-                    except Exception as e:
-                        log.info(f"browser close skipped: {e!r}")
+                        await run_browser_generation(
+                            p, bucket, pool, shutdown_event,  # pyright: ignore[reportUnknownArgumentType]
+                            worker_count, poll_interval_s, max_attempts,
+                            pages_per_browser, headless, use_xvfb,
+                        )
+                    except Exception:
+                        # SB launch / CDP connect failure: don't kill the service,
+                        # back off and let the loop start a fresh browser.
+                        log.exception("browser generation crashed; recycling after backoff")
+                        await sleep_or_shutdown(shutdown_event, poll_interval_s)
     finally:
         await pool.close()
     log.info("Shutdown clean")
@@ -618,12 +671,14 @@ async def main(
     worker_count: int = WORKER_COUNT,
     max_attempts: int = MAX_ATTEMPTS,
     poll_interval_s: float = POLL_INTERVAL_S,
+    pages_per_browser: int = PAGES_PER_BROWSER,
+    use_xvfb: bool = False,
     respect_sitemap: bool = False,
     respect_robots: bool = False,
 ) -> None:
     await run_service(
         headless, worker_count, poll_interval_s, max_attempts,
-        respect_sitemap, respect_robots,
+        pages_per_browser, use_xvfb, respect_sitemap, respect_robots,
     )
 
 
@@ -653,8 +708,12 @@ if __name__ == "__main__":
         help=f"INT     max attempts per page, default {MAX_ATTEMPTS}")
     parser.add_argument("--poll-interval", default=POLL_INTERVAL_S, type=bounded(float, 0.01, 3_600.0),
         help=f"FLOAT   poll interval per worker in seconds, default {POLL_INTERVAL_S}")
+    parser.add_argument("--pages-per-browser", default=PAGES_PER_BROWSER, type=bounded(int, 1, 200),
+        help=f"INT     recycle the SB+Playwright browser every N pages, default {PAGES_PER_BROWSER}")
+    parser.add_argument("--xvfb", action="store_true",
+        help="run headed Chrome inside Xvfb (stronger UC stealth than headless; needs Xvfb installed)")
     parser.add_argument("--no-headless", action="store_true",
-        help="run chromium with a visible window (calibration only)")
+        help="run a visible window (calibration only); without --xvfb the default is headless")
     parser.add_argument("--respect-sitemap", action="store_true",
         help="(not yet honored) crawl from sitemap when found on the root")
     parser.add_argument("--respect-robots-txt", action="store_true",
@@ -667,6 +726,8 @@ if __name__ == "__main__":
             worker_count=args.workers,
             max_attempts=args.max_attempts,
             poll_interval_s=args.poll_interval,
+            pages_per_browser=args.pages_per_browser,
+            use_xvfb=args.xvfb,
             respect_sitemap=args.respect_sitemap,
             respect_robots=args.respect_robots_txt,
         ))
