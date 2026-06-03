@@ -583,6 +583,7 @@ async def run_browser_generation(
     use_xvfb: bool,
 ) -> None:
     driver = await cdp_driver.start_async(  # pyright: ignore[reportUnknownMemberType]
+        browser_executable_path=p.chromium.executable_path,
         headless=headless and not use_xvfb,
         xvfb=use_xvfb or None,
         lang=BROWSER_LANG,
