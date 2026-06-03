@@ -5,7 +5,8 @@ Finds emails and uploads page html to R2 bucket. Later they will
 be parsed using a separated parser to find information categories
 like `description`, `services`, `catalog` and others
 """
-# FIXME: Add better headers, persistent context and better UA rotation
+# FIXME: (optional) Add better headers, persistent context and better UA rotation
+# FIXME: Add SeleniumBase for anti-bot and anti-captcha bypass
 # FIXME: handle sitemap and robots.txt
 import asyncio
 import html as html_lib

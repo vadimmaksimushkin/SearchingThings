@@ -1,3 +1,4 @@
+-- FIXME: rename site_domain to page_root
 CREATE TABLE IF NOT EXISTS scrape_queue (
     id              BIGSERIAL PRIMARY KEY,            -- FIFO
     place_id        TEXT NOT NULL,
