@@ -5,10 +5,10 @@ Finds emails and uploads page html to R2 bucket. Later they will
 be parsed using a separated parser to find information categories
 like `description`, `services`, `catalog` and others
 """
-# FIXME: handle one shared persistent SB context
+# FIXME: handle sitemap and robots.txt
 # FIXME: set navigation delay to opening page_uri
 # with same site_domain on 1 machine
-# FIXME: handle sitemap and robots.txt
+# FIXME: handle one shared persistent SB context
 import asyncio
 import html as html_lib
 import re
@@ -43,7 +43,7 @@ from credentials import (
     R2_PAGES_BUCKET,
     R2_PAGES_SECRET_ACCESS_KEY,
 )
-from constants import ASSET_EXTS
+from constants import ASSET_EXTS, CONTACT_KEYWORDS
 
 WORKER_COUNT = 3
 MAX_ATTEMPTS = 3
@@ -229,6 +229,14 @@ def normalize_url(url: str) -> str:
     return urlunparse((p.scheme, p.netloc, path, "", "", ""))
 
 
+def is_priority_link(url: str) -> bool:
+    """True for 'about'/'contact'-type pages we want scraped first.
+    Matches CONTACT_KEYWORDS (Spanish + English) as a substring of the
+    lowercased URL path."""
+    path = urlparse(url).path.lower()
+    return any(kw in path for kw in CONTACT_KEYWORDS)
+
+
 def normalize_host_path(url: str) -> str:
     """
     Scheme- and www-insensitive 'host+path' used only for the same-site testing
@@ -396,7 +404,10 @@ async def enqueue_children(
         return 0
     known_rows = await conn.fetch(FETCH_KNOWN_PAGES_SQL, job.place_id, job.site_domain)
     known = {r["page_uri"] for r in known_rows}
-    to_insert = [u for u in sorted(links) if u not in known][:remaining]
+    candidates = (u for u in links if u not in known)
+    to_insert = sorted(
+        candidates, key=lambda u: (0 if is_priority_link(u) else 1, u)
+    )[:remaining]
     if not to_insert:
         return 0
     await conn.executemany(
