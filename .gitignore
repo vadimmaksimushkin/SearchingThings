@@ -9,6 +9,7 @@ __*__
 /Deprecated
 /Snippets
 /Thoughts
+/downloaded_files
 .env
 /data.js
 !test-photo.jpeg
