@@ -5,8 +5,6 @@ Finds emails and uploads page html to R2 bucket. Later they will
 be parsed using a separated parser to find information categories
 like `description`, `services`, `catalog` and others
 """
-# FIXME: handle sitemap and robots.txt
-# FIXME: handle one shared persistent SB context
 import asyncio
 import html as html_lib
 import random
@@ -666,15 +664,11 @@ async def run_service(
     min_domain_delay_s: float = MIN_DOMAIN_DELAY_S,
     max_domain_delay_s: float = MAX_DOMAIN_DELAY_S,
     use_xvfb: bool = False,
-    respect_sitemap: bool = False,
-    respect_robots: bool = False,
 ) -> None:
     """Run workers until SIGTERM/SIGINT. Recycles the SeleniumBase+Playwright
     browser every `pages_per_browser` pages; the R2 client, DB pool and the
     per-domain throttle are shared across generations. Each worker scrapes pages
     on one shared persistent context (no per-page context isolation anymore)."""
-    if respect_sitemap or respect_robots:
-        log.warning("respect_sitemap/respect_robots are not honored yet; crawling normally")
 
     shutdown_event = asyncio.Event()
     shutdown_handler(shutdown_event)
@@ -722,13 +716,10 @@ async def main(
     min_domain_delay_s: float = MIN_DOMAIN_DELAY_S,
     max_domain_delay_s: float = MAX_DOMAIN_DELAY_S,
     use_xvfb: bool = False,
-    respect_sitemap: bool = False,
-    respect_robots: bool = False,
 ) -> None:
     await run_service(
         headless, worker_count, poll_interval_s, max_attempts,
-        pages_per_browser, min_domain_delay_s, max_domain_delay_s,
-        use_xvfb, respect_sitemap, respect_robots,
+        pages_per_browser, min_domain_delay_s, max_domain_delay_s, use_xvfb
     )
 
 
@@ -786,8 +777,6 @@ if __name__ == "__main__":
             min_domain_delay_s=args.min_domain_delay,
             max_domain_delay_s=args.max_domain_delay,
             use_xvfb=args.xvfb,
-            respect_sitemap=args.respect_sitemap,
-            respect_robots=args.respect_robots_txt,
         ))
     except KeyboardInterrupt:
         log.info("Terminating")
