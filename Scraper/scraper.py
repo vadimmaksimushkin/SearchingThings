@@ -6,11 +6,10 @@ be parsed using a separated parser to find information categories
 like `description`, `services`, `catalog` and others
 """
 # FIXME: handle sitemap and robots.txt
-# FIXME: set navigation delay to opening page_uri
-# with same site_domain on 1 machine
 # FIXME: handle one shared persistent SB context
 import asyncio
 import html as html_lib
+import random
 import re
 import sys
 import asyncpg
@@ -51,6 +50,8 @@ PAGES_PER_BROWSER = 160  # recycle the whole SB+Playwright browser after this ma
 LOCK_DURATION = timedelta(minutes=5.0)
 POLL_INTERVAL_S = 1.0
 PAGE_TIMEOUT_MS = 15_000
+MIN_DOMAIN_DELAY_S = 10.0  # min wait between hits to one site_domain on this machine
+MAX_DOMAIN_DELAY_S = 20.0  # max wait; actual delay is uniform-random in [min, max]
 EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
 
 R2_ENDPOINT = f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
@@ -189,6 +190,24 @@ class GenerationLimit:
         self._count += 1
         if self._count >= self.limit:
             self.exhausted.set()
+
+
+_THROTTLE_PRUNE_AT = 10_000  # rebuild the schedule dict once it grows past this
+
+
+class DomainThrottle:
+    def __init__(self, min_delay_s: float, max_delay_s: float) -> None:
+        self.min_delay_s = min_delay_s
+        self.max_delay_s = max_delay_s
+        self._next_allowed: dict[str, float] = {}
+
+    def reserve(self, domain: str) -> float:
+        now = asyncio.get_running_loop().time()
+        if len(self._next_allowed) > _THROTTLE_PRUNE_AT:
+            self._next_allowed = {d: t for d, t in self._next_allowed.items() if t > now}
+        start = max(now, self._next_allowed.get(domain, 0.0))
+        self._next_allowed[domain] = start + random.uniform(self.min_delay_s, self.max_delay_s)
+        return start - now
 
 
 async def block_heavy_assets(route: Route) -> None:
@@ -514,10 +533,21 @@ async def handle_one_job(
     job: ClaimedJob,
     pool: asyncpg.Pool,
     shutdown_event: asyncio.Event,
+    throttle: DomainThrottle,
     max_attempts: int,
 ) -> None:
     """Scrape one claimed page, record, log. Revert on shutdown"""
     log.info(f"w{worker_id} claim {job.place_id} {job.page_uri or '<root>'} attempt={job.attempts}")
+
+    wait = throttle.reserve(job.site_domain)
+    if wait > 0.0:
+        log.info(f"w{worker_id} throttle {job.site_domain} wait={wait:.1f}s")
+        if await sleep_or_shutdown(shutdown_event, wait):
+            result = ScrapeResult(success=False, reason=SHUTDOWN_REASON)
+            await record_outcome(pool, job, result, max_attempts)
+            log_outcome(worker_id, job, result, max_attempts)
+            return
+
     try:
         result = await process_one_job(context, bucket, job)
     except Exception as e:
@@ -538,6 +568,7 @@ async def worker_loop(
     pool: asyncpg.Pool,
     shutdown_event: asyncio.Event,
     gen: GenerationLimit,
+    throttle: DomainThrottle,
     poll_interval_s: float,
     max_attempts: int,
 ) -> None:
@@ -546,7 +577,7 @@ async def worker_loop(
         if job is None:
             continue
         await handle_one_job(
-            worker_id, context, bucket, job, pool, shutdown_event, max_attempts
+            worker_id, context, bucket, job, pool, shutdown_event, throttle, max_attempts
         )
         gen.record_page()
     log.info(f"w{worker_id} exit")
@@ -586,6 +617,7 @@ async def run_browser_generation(
     bucket: aioboto3.Session,
     pool: asyncpg.Pool,
     shutdown_event: asyncio.Event,
+    throttle: DomainThrottle,
     worker_count: int,
     poll_interval_s: float,
     max_attempts: int,
@@ -609,7 +641,7 @@ async def run_browser_generation(
             await asyncio.gather(*(
                 worker_loop(
                     i, context, bucket, pool, shutdown_event,
-                    gen, poll_interval_s, max_attempts,
+                    gen, throttle, poll_interval_s, max_attempts,
                 )
                 for i in range(worker_count)
             ))
@@ -631,19 +663,22 @@ async def run_service(
     poll_interval_s: float = POLL_INTERVAL_S,
     max_attempts: int = MAX_ATTEMPTS,
     pages_per_browser: int = PAGES_PER_BROWSER,
+    min_domain_delay_s: float = MIN_DOMAIN_DELAY_S,
+    max_domain_delay_s: float = MAX_DOMAIN_DELAY_S,
     use_xvfb: bool = False,
     respect_sitemap: bool = False,
     respect_robots: bool = False,
 ) -> None:
     """Run workers until SIGTERM/SIGINT. Recycles the SeleniumBase+Playwright
-    browser every `pages_per_browser` pages; the R2 client and DB pool are shared
-    across generations. Each worker scrapes pages on one shared persistent
-    context (no per-page context isolation anymore)."""
+    browser every `pages_per_browser` pages; the R2 client, DB pool and the
+    per-domain throttle are shared across generations. Each worker scrapes pages
+    on one shared persistent context (no per-page context isolation anymore)."""
     if respect_sitemap or respect_robots:
         log.warning("respect_sitemap/respect_robots are not honored yet; crawling normally")
 
     shutdown_event = asyncio.Event()
     shutdown_handler(shutdown_event)
+    throttle = DomainThrottle(min_domain_delay_s, max_domain_delay_s)
 
     log.info(f"Service started, workers={worker_count}, recycle every {pages_per_browser} pages")
     pool = await open_pool_with_retry(worker_count, poll_interval_s, shutdown_event)
@@ -665,7 +700,7 @@ async def run_service(
                     try:
                         await run_browser_generation(
                             p, bucket, pool, shutdown_event,  # pyright: ignore[reportUnknownArgumentType]
-                            worker_count, poll_interval_s, max_attempts,
+                            throttle, worker_count, poll_interval_s, max_attempts,
                             pages_per_browser, headless, use_xvfb,
                         )
                     except Exception:
@@ -684,13 +719,16 @@ async def main(
     max_attempts: int = MAX_ATTEMPTS,
     poll_interval_s: float = POLL_INTERVAL_S,
     pages_per_browser: int = PAGES_PER_BROWSER,
+    min_domain_delay_s: float = MIN_DOMAIN_DELAY_S,
+    max_domain_delay_s: float = MAX_DOMAIN_DELAY_S,
     use_xvfb: bool = False,
     respect_sitemap: bool = False,
     respect_robots: bool = False,
 ) -> None:
     await run_service(
         headless, worker_count, poll_interval_s, max_attempts,
-        pages_per_browser, use_xvfb, respect_sitemap, respect_robots,
+        pages_per_browser, min_domain_delay_s, max_domain_delay_s,
+        use_xvfb, respect_sitemap, respect_robots,
     )
 
 
@@ -722,6 +760,10 @@ if __name__ == "__main__":
         help=f"FLOAT   poll interval per worker in seconds, default {POLL_INTERVAL_S}")
     parser.add_argument("--pages-per-browser", default=PAGES_PER_BROWSER, type=bounded(int, 1, 200),
         help=f"INT     recycle the SB+Playwright browser every N pages, default {PAGES_PER_BROWSER}")
+    parser.add_argument("--min-domain-delay", default=MIN_DOMAIN_DELAY_S, type=bounded(float, 0.0, 3_600.0),
+        help=f"FLOAT   min seconds between hits to one site_domain on this machine, default {MIN_DOMAIN_DELAY_S}")
+    parser.add_argument("--max-domain-delay", default=MAX_DOMAIN_DELAY_S, type=bounded(float, 0.0, 3_600.0),
+        help=f"FLOAT   max seconds between hits to one site_domain on this machine, default {MAX_DOMAIN_DELAY_S}")
     parser.add_argument("--xvfb", action="store_true",
         help="run headed Chrome inside Xvfb (stronger UC stealth than headless; needs Xvfb installed)")
     parser.add_argument("--no-headless", action="store_true",
@@ -731,6 +773,8 @@ if __name__ == "__main__":
     parser.add_argument("--respect-robots-txt", action="store_true",
         help="(not yet honored) respect robots.txt crawl-delay")
     args = parser.parse_args()
+    if args.min_domain_delay > args.max_domain_delay:
+        parser.error("--min-domain-delay must be <= --max-domain-delay")
 
     try:
         asyncio.run(main(
@@ -739,6 +783,8 @@ if __name__ == "__main__":
             max_attempts=args.max_attempts,
             poll_interval_s=args.poll_interval,
             pages_per_browser=args.pages_per_browser,
+            min_domain_delay_s=args.min_domain_delay,
+            max_domain_delay_s=args.max_domain_delay,
             use_xvfb=args.xvfb,
             respect_sitemap=args.respect_sitemap,
             respect_robots=args.respect_robots_txt,
