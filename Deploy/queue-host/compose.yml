@@ -60,6 +60,8 @@ services:
       - "--workers=3"
       - "--max-attempts=3"
       - "--poll-interval=1.0"
+      - "--min-domain-delay=5.0"
+      - "--max-domain-delay=15.0"
 
 volumes:
   pg_queue_data:
