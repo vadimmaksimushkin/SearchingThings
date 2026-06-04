@@ -275,7 +275,7 @@ def is_same_site(site_domain: str, url: str) -> bool:
 def page_r2_key(place_id: str, final_uri: str) -> str:
     p = urlparse(final_uri)
     rest = f"{p.hostname or ''}{p.path}".rstrip("/")
-    return f"pages/{place_id}/{rest}.html"
+    return f"{place_id}/{rest}.html"
 
 
 def is_asset_or_sentry(email: str) -> bool:
