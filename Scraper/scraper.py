@@ -23,7 +23,6 @@ from playwright.async_api import (
     Browser,
     BrowserContext,
     Page,
-    Playwright,
     Response,
     Route,
     TimeoutError as PWTimeout,
@@ -44,7 +43,7 @@ from constants import ASSET_EXTS, CONTACT_KEYWORDS
 
 WORKER_COUNT = 3
 MAX_ATTEMPTS = 3
-PAGES_PER_BROWSER = 160  # recycle the whole SB+Playwright browser after this many pages
+PAGES_PER_BROWSER = 60  # recycle the whole SB+Playwright browser after this many pages
 LOCK_DURATION = timedelta(minutes=5.0)
 POLL_INTERVAL_S = 1.0
 PAGE_TIMEOUT_MS = 15_000
@@ -611,7 +610,6 @@ def shutdown_handler(shutdown_event: asyncio.Event) -> None:
 
 
 async def run_browser_generation(
-    p: Playwright,
     bucket: aioboto3.Session,
     pool: asyncpg.Pool,
     shutdown_event: asyncio.Event,
@@ -623,36 +621,47 @@ async def run_browser_generation(
     headless: bool,
     use_xvfb: bool,
 ) -> None:
-    driver = await cdp_driver.start_async(  # pyright: ignore[reportUnknownMemberType]
-        browser_executable_path=p.chromium.executable_path,
-        headless=headless and not use_xvfb,
-        xvfb=use_xvfb or None,
-        lang=BROWSER_LANG,
-        tzone=BROWSER_TIMEZONE,
-    )
+    """Own the full Playwright stack for one generation, then tear it all down —
+    including `p.stop()`. playwright 1.59/1.60 leaks driver-side memory across
+    reuse, so the Playwright driver must be fully restarted (not just the browser)
+    each generation; mirrors `recycle_browser` in image_scraper.py."""
+    p = await async_playwright().start()
     try:
-        browser: Browser = await p.chromium.connect_over_cdp(driver.get_endpoint_url())
+        driver = await cdp_driver.start_async(  # pyright: ignore[reportUnknownMemberType]
+            browser_executable_path=p.chromium.executable_path,
+            headless=headless and not use_xvfb,
+            xvfb=use_xvfb or None,
+            lang=BROWSER_LANG,
+            tzone=BROWSER_TIMEZONE,
+        )
         try:
-            context = browser.contexts[0] if browser.contexts else await browser.new_context()
-            await context.route("**/*", block_heavy_assets)
-            gen = GenerationLimit(limit=pages_per_browser)
-            await asyncio.gather(*(
-                worker_loop(
-                    i, context, bucket, pool, shutdown_event,
-                    gen, throttle, poll_interval_s, max_attempts,
-                )
-                for i in range(worker_count)
-            ))
+            browser: Browser = await p.chromium.connect_over_cdp(driver.get_endpoint_url())
+            try:
+                context = browser.contexts[0] if browser.contexts else await browser.new_context()
+                await context.route("**/*", block_heavy_assets)
+                gen = GenerationLimit(limit=pages_per_browser)
+                await asyncio.gather(*(
+                    worker_loop(
+                        i, context, bucket, pool, shutdown_event,
+                        gen, throttle, poll_interval_s, max_attempts,
+                    )
+                    for i in range(worker_count)
+                ))
+            finally:
+                try:
+                    await browser.close()
+                except Exception as e:
+                    log.info(f"playwright disconnect skipped: {e!r}")
         finally:
             try:
-                await browser.close()
+                driver.stop()  # pyright: ignore[reportUnknownMemberType]
             except Exception as e:
-                log.info(f"playwright disconnect skipped: {e!r}")
+                log.info(f"driver stop skipped: {e!r}")
     finally:
         try:
-            driver.stop()  # pyright: ignore[reportUnknownMemberType]
+            await p.stop()
         except Exception as e:
-            log.info(f"driver stop skipped: {e!r}")
+            log.info(f"playwright stop skipped: {e!r}")
 
 
 async def run_service(
@@ -689,19 +698,18 @@ async def run_service(
             aws_secret_access_key=R2_PAGES_SECRET_ACCESS_KEY,
             region_name="auto",
         ) as bucket:  # pyright: ignore
-            async with async_playwright() as p:
-                while not shutdown_event.is_set():
-                    try:
-                        await run_browser_generation(
-                            p, bucket, pool, shutdown_event,  # pyright: ignore[reportUnknownArgumentType]
-                            throttle, worker_count, poll_interval_s, max_attempts,
-                            pages_per_browser, headless, use_xvfb,
-                        )
-                    except Exception:
-                        # SB launch / CDP connect failure: don't kill the service,
-                        # back off and let the loop start a fresh browser.
-                        log.exception("browser generation crashed; recycling after backoff")
-                        await sleep_or_shutdown(shutdown_event, poll_interval_s)
+            while not shutdown_event.is_set():
+                try:
+                    await run_browser_generation(
+                        bucket, pool, shutdown_event,  # pyright: ignore[reportUnknownArgumentType]
+                        throttle, worker_count, poll_interval_s, max_attempts,
+                        pages_per_browser, headless, use_xvfb,
+                    )
+                except Exception:
+                    # Playwright start / SB launch / CDP connect failure: don't kill
+                    # the service, back off and let the loop start a fresh stack.
+                    log.exception("browser generation crashed; recycling after backoff")
+                    await sleep_or_shutdown(shutdown_event, poll_interval_s)
     finally:
         await pool.close()
     log.info("Shutdown clean")
