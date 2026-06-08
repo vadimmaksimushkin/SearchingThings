@@ -1,0 +1,40 @@
+[MAIN]
+ignore-paths=^(Deprecated|Snippets|DifferentScripts)/.*$
+fail-under=9.0
+
+[MESSAGES CONTROL]
+disable=
+  # Docstrings (style)
+  missing-module-docstring,
+  missing-class-docstring,
+  missing-function-docstring,
+  # Imports: ordering/placement
+  wrong-import-order,
+  wrong-import-position,
+  ungrouped-imports,
+  # Formatting
+  invalid-name,
+  line-too-long,
+  superfluous-parens,
+  multiple-statements,
+  missing-final-newline,
+  trailing-newlines,
+  # Stylistic warnings
+  logging-fstring-interpolation,
+  broad-exception-caught,
+  redefined-outer-name,
+  fixme,
+  raise-missing-from,
+  # Environment-only (deps not installed in the lint job)
+  import-error,
+  no-member,
+  # Cross-file / design
+  duplicate-code,
+  too-many-arguments,
+  too-many-positional-arguments,
+  too-many-locals,
+  too-many-branches,
+  too-many-statements,
+  too-many-return-statements,
+  too-many-instance-attributes,
+  too-few-public-methods,
