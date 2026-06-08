@@ -1,17 +1,13 @@
-"""
-Scraper in active rework. Crawls websites, collects internal links
-and adds them to FIFO scraping queue (max cap 100 internal links).
-Finds emails and uploads page html to R2 bucket. Later they will
-be parsed using a separated parser to find information categories
-like `description`, `services`, `catalog` and others
-"""
+# FIXME: finish code cleanup
 import asyncio
 import html as html_lib
 import random
 import re
 import sys
+import time
 import asyncpg
 import aioboto3  # pyright: ignore[reportMissingTypeStubs]
+import botocore.exceptions  # pyright: ignore[reportMissingTypeStubs]
 import logging
 import signal
 from collections.abc import Callable
@@ -43,21 +39,19 @@ from constants import ASSET_EXTS, CONTACT_KEYWORDS
 
 WORKER_COUNT = 3
 MAX_ATTEMPTS = 3
-PAGES_PER_BROWSER = 60  # recycle the whole SB+Playwright browser after this many pages
-LOCK_DURATION = timedelta(minutes=5.0)
 POLL_INTERVAL_S = 1.0
+PAGES_PER_BROWSER = 60
+MIN_DOMAIN_DELAY_S = 5.0
+MAX_DOMAIN_DELAY_S = 15.0
 PAGE_TIMEOUT_MS = 15_000
-MIN_DOMAIN_DELAY_S = 10.0  # min wait between hits to one site_domain on this machine
-MAX_DOMAIN_DELAY_S = 20.0  # max wait; actual delay is uniform-random in [min, max]
-EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
-
-R2_ENDPOINT = f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-
-# SeleniumBase picks a realistic UA matching the launched Chrome, so we no longer
-# rotate fake UA strings. We only pin the locale/timezone fingerprint at launch.
+LOCK_DURATION = timedelta(minutes=5.0)
 BROWSER_LANG = "en-US"
 BROWSER_TIMEZONE = "America/Mexico_City"
-
+EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
+BLOCKED_RESOURCE_TYPES = {"image", "media", "font"}
+BLOCKED_URL_EXTS = {"pdf", "zip", "exe", "dmg", "tar", "gz"}
+SHUTDOWN_REASON = "shutdown_interrupted"
+R2_ENDPOINT = f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 CONNECTION_ERRORS = (
     asyncpg.PostgresConnectionError,
     asyncpg.InterfaceError,
@@ -67,10 +61,10 @@ CONNECTION_ERRORS = (
     OSError,
     asyncio.TimeoutError,
 )
-
-BLOCKED_RESOURCE_TYPES = {"image", "media", "font"}
-BLOCKED_URL_EXTS = {"pdf", "zip", "exe", "dmg", "tar", "gz"}
-SHUTDOWN_REASON = "shutdown_interrupted"
+BUCKET_ERRORS = (
+    botocore.exceptions.BotoCoreError,
+    botocore.exceptions.ClientError,
+)
 
 CLAIM_SQL = """
 UPDATE scrape_queue
@@ -79,17 +73,18 @@ SET locked_until = now() + $1,
     last_attempt_at = now()
 WHERE id = (
     SELECT id FROM scrape_queue
-    WHERE locked_until IS NULL OR locked_until < now()
+    WHERE (locked_until IS NULL OR locked_until < now())
+      AND page_root <> ALL($2::text[])
     ORDER BY id
     LIMIT 1
     FOR UPDATE SKIP LOCKED
 )
-RETURNING id, place_id, site_domain, page_uri, attempts
+RETURNING id, page_root, page_uri, attempts
 """
 
 LOG_START_SQL = """
-INSERT INTO attempt_log (place_id, site_domain, page_uri, attempt_no)
-VALUES ($1, $2, $3, $4)
+INSERT INTO attempt_log (page_root, page_uri, attempt_no)
+VALUES ($1, $2, $3)
 RETURNING log_id
 """
 
@@ -101,24 +96,24 @@ WHERE log_id = $1
 
 INSERT_SUCCESS_SQL = """
 INSERT INTO success
-    (place_id, site_domain, page_uri, final_uri, http_status, r2_key, bytes, emails, attempts)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-ON CONFLICT (place_id, site_domain, page_uri) DO NOTHING
+    (page_root, page_uri, final_uri, http_status, r2_key, bytes, emails, attempts)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT (page_root, page_uri) DO NOTHING
 """
 
 INSERT_ERROR_SQL = """
-INSERT INTO error (place_id, site_domain, page_uri, http_status, attempts, reason)
-VALUES ($1, $2, $3, $4, $5, $6)
-ON CONFLICT (place_id, site_domain, page_uri) DO NOTHING
+INSERT INTO error (page_root, page_uri, http_status, attempts, reason)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (page_root, page_uri) DO NOTHING
 """
 
 DELETE_QUEUE_RECORD_SQL = """
-DELETE FROM scrape_queue WHERE place_id = $1 AND site_domain = $2 AND page_uri = $3
+DELETE FROM scrape_queue WHERE page_root = $1 AND page_uri = $2
 """
 
 UNLOCK_QUEUE_RECORD_SQL = """
 UPDATE scrape_queue SET locked_until = NULL
-WHERE place_id = $1 AND site_domain = $2 AND page_uri = $3
+WHERE page_root = $1 AND page_uri = $2
 """
 
 # Unlock AND roll back the attempt when a worker is interrupted by shutdown
@@ -126,41 +121,90 @@ UNLOCK_AND_DECREMENT_SQL = """
 UPDATE scrape_queue
 SET locked_until = NULL,
     attempts = GREATEST(attempts - 1, 0)
-WHERE place_id = $1 AND site_domain = $2 AND page_uri = $3
+WHERE page_root = $1 AND page_uri = $2
 """
 
 LOCK_PAGE_CAP_SQL = """
-SELECT pages_remaining FROM place_uri
-WHERE place_id = $1 AND site_domain = $2
+SELECT pages_remaining FROM page
+WHERE page_root = $1
 FOR UPDATE
 """
 
 FETCH_KNOWN_PAGES_SQL = """
-SELECT page_uri FROM scrape_queue WHERE place_id = $1 AND site_domain = $2
-UNION ALL SELECT page_uri FROM success WHERE place_id = $1 AND site_domain = $2
-UNION ALL SELECT page_uri FROM error   WHERE place_id = $1 AND site_domain = $2
+SELECT page_uri FROM scrape_queue WHERE page_root = $1
+UNION ALL SELECT page_uri FROM success WHERE page_root = $1
+UNION ALL SELECT page_uri FROM error   WHERE page_root = $1
 """
 
 INSERT_CHILD_SQL = """
-INSERT INTO scrape_queue (place_id, site_domain, page_uri)
-VALUES ($1, $2, $3)
-ON CONFLICT (place_id, site_domain, page_uri) DO NOTHING
+INSERT INTO scrape_queue (page_root, page_uri)
+VALUES ($1, $2)
+ON CONFLICT (page_root, page_uri) DO NOTHING
 """
 
 DECREMENT_BUDGET_SQL = """
-UPDATE place_uri SET pages_remaining = GREATEST(pages_remaining - $3, 0)
-WHERE place_id = $1 AND site_domain = $2
+UPDATE page SET pages_remaining = GREATEST(pages_remaining - $2, 0)
+WHERE page_root = $1
 """
 
-log = logging.getLogger(__name__)
+
+class Counter:
+    def __init__(self, limit: int) -> None:
+        log.info(f"Counter is initialized with limit={limit}")
+        self.limit = limit
+        self._counter = 0
+        self.reached = asyncio.Event()
+
+    def increment(self) -> None:
+        self._counter += 1
+        if self._counter >= self.limit:
+            self.reached.set()
+
+
+class DomainThrottle:
+    def __init__(
+        self,
+        min_delay: float,
+        max_delay: float,
+        lease_s: float,
+    ) -> None:
+        self.min_delay = min_delay
+        self.max_delay = max_delay
+        self.lease_s = lease_s
+        self.busy_until: dict[str, float] = {}
+
+    def busy_domains(self) -> list[str]:
+        now = time.monotonic()
+        expired = [d for d, deadline in self.busy_until.items() if deadline <= now]
+        for d in expired:
+            del self.busy_until[d]
+        return list(self.busy_until.keys())
+
+    def reserve(self, domain: str) -> None:
+        self.busy_until[domain] = time.monotonic() + self.lease_s
+
+    def cooldown(self, domain: str) -> None:
+        delay = random.uniform(
+            self.min_delay,
+            self.max_delay
+        )
+        self.busy_until[domain] = time.monotonic() + delay
+        log.info(f"[DomainThrottle] Set delay on {domain} for {delay}s")
+
+
+class MaxPagesReached(Exception):
+    pass
+
+
+class TerminateService(Exception):
+    pass
 
 
 @dataclass
 class ClaimedJob:
     id: int
     log_id: int
-    place_id: str
-    site_domain: str
+    page_root: str
     page_uri: str
     attempts: int
 
@@ -177,34 +221,29 @@ class ScrapeResult:
     reason: str = "ok"
 
 
-@dataclass
-class GenerationLimit:
-    limit: int
-    exhausted: asyncio.Event = field(default_factory=asyncio.Event)
-    _count: int = 0
 
-    def record_page(self) -> None:
-        self._count += 1
-        if self._count >= self.limit:
-            self.exhausted.set()
+def shutdown_handler(shutdown_event: asyncio.Event) -> None:
+    loop = asyncio.get_running_loop()
 
+    def on_shutdown() -> None:
+        if not shutdown_event.is_set():
+            log.info("Shutdown signal received, exiting...")
+        shutdown_event.set()
 
-_THROTTLE_PRUNE_AT = 10_000  # rebuild the schedule dict once it grows past this
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, on_shutdown)
 
 
-class DomainThrottle:
-    def __init__(self, min_delay_s: float, max_delay_s: float) -> None:
-        self.min_delay_s = min_delay_s
-        self.max_delay_s = max_delay_s
-        self._next_allowed: dict[str, float] = {}
-
-    def reserve(self, domain: str) -> float:
-        now = asyncio.get_running_loop().time()
-        if len(self._next_allowed) > _THROTTLE_PRUNE_AT:
-            self._next_allowed = {d: t for d, t in self._next_allowed.items() if t > now}
-        start = max(now, self._next_allowed.get(domain, 0.0))
-        self._next_allowed[domain] = start + random.uniform(self.min_delay_s, self.max_delay_s)
-        return start - now
+async def sleep_or_shutdown(
+    shutdown_event: asyncio.Event,
+    seconds: float,
+) -> bool:
+    """Return `true` on firing shutdown event"""
+    try:
+        await asyncio.wait_for(shutdown_event.wait(), timeout=seconds)
+        return True
+    except asyncio.TimeoutError:
+        return False
 
 
 async def block_heavy_assets(route: Route) -> None:
@@ -220,7 +259,11 @@ async def block_heavy_assets(route: Route) -> None:
     await route.continue_()
 
 
-async def scroll_to_bottom(page: Page, max_steps: int = 20, step_pause_ms: int = 300) -> None:
+async def scroll_to_bottom(
+    page: Page,
+    max_steps: int = 20,
+    step_pause_ms: int = 300,
+) -> None:
     last_height = 0
     for _ in range(max_steps):
         height: int = await page.evaluate("""
@@ -246,17 +289,13 @@ def normalize_url(url: str) -> str:
 
 
 def is_priority_link(url: str) -> bool:
-    """True for 'about'/'contact'-type pages we want scraped first.
-    Matches CONTACT_KEYWORDS (Spanish + English) as a substring of the
-    lowercased URL path."""
+    """Return true for contact links"""
     path = urlparse(url).path.lower()
     return any(kw in path for kw in CONTACT_KEYWORDS)
 
 
 def normalize_host_path(url: str) -> str:
-    """
-    Scheme- and www-insensitive 'host+path' used only for the same-site testing
-    """
+    """Scheme and www insensitive 'host+path'"""
     p = urlparse(url)
     host = (p.hostname or "")
     if host.startswith("www."):
@@ -265,16 +304,16 @@ def normalize_host_path(url: str) -> str:
     return f"{host}{path}".lower()
 
 
-def is_same_site(site_domain: str, url: str) -> bool:
-    base = normalize_host_path(site_domain)
+def is_same_site(page_root: str, url: str) -> bool:
+    base = normalize_host_path(page_root)
     target = normalize_host_path(url)
     return target == base or target.startswith(base + "/")
 
 
-def page_r2_key(place_id: str, final_uri: str) -> str:
+def page_r2_key(final_uri: str) -> str:
     p = urlparse(final_uri)
     rest = f"{p.hostname or ''}{p.path}".rstrip("/")
-    return f"{place_id}/{rest}.html"
+    return f"{rest}.html"
 
 
 def is_asset_or_sentry(email: str) -> bool:
@@ -291,10 +330,10 @@ def emails_from_html(html: str) -> set[str]:
     return {e for e in EMAIL_RE.findall(decoded) if not is_asset_or_sentry(e)}
 
 
-async def discover_links(page: Page, site_domain: str) -> set[str]:
+async def discover_links(page: Page, page_root: str) -> set[str]:
     """Collect same-site page URLs. Skips assets and the root itself"""
-    base = normalize_host_path(site_domain)
-    out: set[str] = set()
+    base = normalize_host_path(page_root)
+    links: set[str] = set()
     for anchor in await page.locator("a[href]").all():
         href = await anchor.get_attribute("href")
         if not href or href.startswith(("javascript:", "mailto:", "tel:", "#")):
@@ -310,19 +349,177 @@ async def discover_links(page: Page, site_domain: str) -> set[str]:
         target = normalize_host_path(absolute)
         if target == base or not target.startswith(base + "/"):
             continue  # the root (handled as "") or off-site
-        out.add(normalize_url(absolute))
-    return out
+        links.add(normalize_url(absolute))
+    return links
 
 
-async def process_one_job(
+async def enqueue_children(
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
+    job: ClaimedJob,
+    links: set[str],
+) -> int:
+    """Filter discovered links against the known links, cap at the remainings,
+    insert and decrement the budget by the number enqueued.
+    Returns inserted count."""
+    remaining: int | None = await conn.fetchval(
+        LOCK_PAGE_CAP_SQL,
+        job.page_root,
+    )
+    if not remaining or not links:
+        return 0
+    known_rows = await conn.fetch(
+        FETCH_KNOWN_PAGES_SQL,
+        job.page_root,
+    )
+    known = {r["page_uri"] for r in known_rows}
+    candidates = (u for u in links if u not in known)
+    to_insert = sorted(
+        candidates, key=lambda u: (0 if is_priority_link(u) else 1, u)
+    )[:remaining]
+    if not to_insert:
+        return 0
+    await conn.executemany(
+        INSERT_CHILD_SQL,
+        [(job.page_root, u) for u in to_insert],
+    )
+    await conn.execute(
+        DECREMENT_BUDGET_SQL,
+        job.page_root,
+        len(to_insert)
+    )
+    return len(to_insert)
+
+
+async def record_outcome(
+    pool: asyncpg.Pool,
+    job: ClaimedJob,
+    result: ScrapeResult,
+    max_attempts: int,
+) -> None:
+    """Update DB on outcome, update attempt log, transfer record from queue
+    to success or error, or unlock it for future use or unlock and decrement
+    on shutdown interruption"""
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                if result.reason == SHUTDOWN_REASON:
+                    await conn.execute(
+                        LOG_FINISH_SQL,
+                        job.log_id,
+                        "interrupted",
+                        result.reason,
+                    )
+                    await conn.execute(
+                        UNLOCK_AND_DECREMENT_SQL,
+                        job.page_root,
+                        job.page_uri,
+                    )
+                    return
+
+                outcome = "success" if result.success else "error"
+                await conn.execute(
+                    LOG_FINISH_SQL,
+                    job.log_id,
+                    outcome,
+                    result.reason
+                )
+
+                if result.success:
+                    await enqueue_children(conn, job, result.links)
+                    await conn.execute(
+                        INSERT_SUCCESS_SQL,
+                        job.page_root,
+                        job.page_uri,
+                        result.final_uri,
+                        result.http_status,
+                        result.r2_key,
+                        result.bytes,
+                        result.emails or None,
+                        job.attempts,
+                    )
+                    await conn.execute(
+                        DELETE_QUEUE_RECORD_SQL,
+                        job.page_root,
+                        job.page_uri,
+                    )
+                elif job.attempts >= max_attempts:
+                    await conn.execute(
+                        INSERT_ERROR_SQL,
+                        job.page_root,
+                        job.page_uri,
+                        result.http_status,
+                        job.attempts,
+                        result.reason,
+                    )
+                    await conn.execute(
+                        DELETE_QUEUE_RECORD_SQL,
+                        job.page_root,
+                        job.page_uri,
+                    )
+                else:
+                    await conn.execute(
+                        UNLOCK_QUEUE_RECORD_SQL,
+                        job.page_root,
+                        job.page_uri,
+                    )
+    except CONNECTION_ERRORS as e:
+        log.warning(f"DB unavailable recording {job.page_root} {job.page_uri!r}:"
+                    f" {e!r}")
+    except Exception:
+        log.exception(f"record_outcome failed for {job.page_root}"
+                      f" {job.page_uri!r}")
+
+
+def log_outcome(
+    worker_number: int,
+    job: ClaimedJob,
+    result: ScrapeResult,
+    max_attempts: int
+) -> None:
+    tag = job.page_uri or "<root>"
+    if result.success:
+        log.info(f"w{worker_number} success {job.page_root} {tag} "
+                 f"emails={len(result.emails)} links={len(result.links)}")
+    elif result.reason == SHUTDOWN_REASON:
+        log.info(f"w{worker_number} interrupted {job.page_root} {tag}"
+                 f" (unlocked, will retry)")
+    elif job.attempts >= max_attempts:
+        log.info(f"w{worker_number} terminal {job.page_root} {tag}"
+                 f" reason={result.reason}")
+    else:
+        log.info(f"w{worker_number} retry {job.page_root} {tag} "
+                 f"attempt={job.attempts} reason={result.reason}")
+
+
+
+async def claim_and_log_start(
+    pool: asyncpg.Pool,
+    busy_domains: list[str],
+) -> ClaimedJob | None:
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(CLAIM_SQL, LOCK_DURATION, busy_domains)
+            if not row:
+                return None
+            log_id = await conn.fetchval(
+                LOG_START_SQL, row["page_root"],
+                row["page_uri"], row["attempts"],
+            )
+            return ClaimedJob(
+                id=row["id"],
+                log_id=log_id,
+                page_root=row["page_root"],
+                page_uri=row["page_uri"],
+                attempts=row["attempts"],
+            )
+
+
+async def scrape(
     context: BrowserContext,
     bucket: aioboto3.Session,
     job: ClaimedJob
 ) -> ScrapeResult:
-    """Scrape one page: get final URL, scroll, regex emails, upload HTML to R2,
-    same-site links. Opens one page (tab) on the shared persistent SB context;
-    stealth and UA come from the SeleniumBase browser, not from per-page setup."""
-    target = job.page_uri or job.site_domain
+    target = job.page_uri or job.page_root
     page = await context.new_page()
     try:
         try:
@@ -330,9 +527,17 @@ async def process_one_job(
                 target, timeout=PAGE_TIMEOUT_MS, wait_until="domcontentloaded"
             )
         except PWTimeout:
-            return ScrapeResult(success=False, final_uri=target, reason="page_load_timeout")
+            return ScrapeResult(
+                success=False,
+                final_uri=target,
+                reason="page_load_timeout"
+            )
         except Exception as e:
-            return ScrapeResult(success=False, final_uri=target, reason=f"goto_failed: {e!r}")
+            return ScrapeResult(
+                success=False,
+                final_uri=target,
+                reason=f"goto_failed: {e!r}"
+            )
 
         status = response.status if response else None
         final_uri = page.url
@@ -350,13 +555,13 @@ async def process_one_job(
         html = await page.content()
         emails = emails_from_html(html)
         try:
-            links = await discover_links(page, job.site_domain)
+            links = await discover_links(page, job.page_root)
         except Exception as e:
             log.warning(f"  link discovery failed on {final_uri}: {e!r}")
             links: set[str] = set()
 
         body = html.encode("utf-8", "replace")
-        key = page_r2_key(job.place_id, final_uri)
+        key = page_r2_key(final_uri)
         try:
             await bucket.put_object( # type: ignore
                 Bucket=R2_PAGES_BUCKET, Key=key, Body=body,
@@ -385,168 +590,20 @@ async def process_one_job(
             log.info(f"page close skipped: {e!r}")
 
 
-async def claim_and_log_start(pool: asyncpg.Pool) -> ClaimedJob | None:
-    """Set lock, bump attemtps, bump last_attempt_at on scrape_queue and insert
-    a draft attempt_log"""
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            row = await conn.fetchrow(CLAIM_SQL, LOCK_DURATION)
-            if not row:
-                return None
-            log_id = await conn.fetchval(
-                LOG_START_SQL, row["place_id"], row["site_domain"],
-                row["page_uri"], row["attempts"],
-            )
-            return ClaimedJob(
-                id=row["id"],
-                log_id=log_id,
-                place_id=row["place_id"],
-                site_domain=row["site_domain"],
-                page_uri=row["page_uri"],
-                attempts=row["attempts"],
-            )
-
-
-async def enqueue_children(
-    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
-    job: ClaimedJob,
-    links: set[str],
-) -> int:
-    """Filter discovered links against the known links, cap at the remainings,
-    insert and decrement the budget by the number enqueued.
-    Returns inserted count."""
-    remaining: int | None = await conn.fetchval(LOCK_PAGE_CAP_SQL, job.place_id, job.site_domain)
-    if not remaining or not links:
-        return 0
-    known_rows = await conn.fetch(FETCH_KNOWN_PAGES_SQL, job.place_id, job.site_domain)
-    known = {r["page_uri"] for r in known_rows}
-    candidates = (u for u in links if u not in known)
-    to_insert = sorted(
-        candidates, key=lambda u: (0 if is_priority_link(u) else 1, u)
-    )[:remaining]
-    if not to_insert:
-        return 0
-    await conn.executemany(
-        INSERT_CHILD_SQL, [(job.place_id, job.site_domain, u) for u in to_insert]
-    )
-    await conn.execute(DECREMENT_BUDGET_SQL, job.place_id, job.site_domain, len(to_insert))
-    return len(to_insert)
-
-
-async def record_outcome(
-    pool: asyncpg.Pool, job: ClaimedJob, result: ScrapeResult, max_attempts: int,
-) -> None:
-    """Update DB on outcome, update attempt log, transfer record from queue
-    to success or error, or unlock it for future use or unlock and decrement
-    on shutdown interruption"""
-    try:
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                if result.reason == SHUTDOWN_REASON:
-                    await conn.execute(LOG_FINISH_SQL, job.log_id, "interrupted", result.reason)
-                    await conn.execute(
-                        UNLOCK_AND_DECREMENT_SQL, job.place_id, job.site_domain, job.page_uri
-                    )
-                    return
-
-                outcome = "success" if result.success else "error"
-                await conn.execute(LOG_FINISH_SQL, job.log_id, outcome, result.reason)
-
-                if result.success:
-                    await enqueue_children(conn, job, result.links)
-                    await conn.execute(
-                        INSERT_SUCCESS_SQL,
-                        job.place_id, job.site_domain, job.page_uri,
-                        result.final_uri, result.http_status, result.r2_key,
-                        result.bytes, result.emails or None, job.attempts,
-                    )
-                    await conn.execute(
-                        DELETE_QUEUE_RECORD_SQL, job.place_id, job.site_domain, job.page_uri
-                    )
-                elif job.attempts >= max_attempts:
-                    await conn.execute(
-                        INSERT_ERROR_SQL,
-                        job.place_id, job.site_domain, job.page_uri,
-                        result.http_status, job.attempts, result.reason,
-                    )
-                    await conn.execute(
-                        DELETE_QUEUE_RECORD_SQL, job.place_id, job.site_domain, job.page_uri
-                    )
-                else:
-                    await conn.execute(
-                        UNLOCK_QUEUE_RECORD_SQL, job.place_id, job.site_domain, job.page_uri
-                    )
-    except CONNECTION_ERRORS as e:
-        log.warning(f"DB unavailable recording {job.place_id} {job.page_uri!r}: {e!r}")
-    except Exception:
-        log.exception(f"record_outcome failed for {job.place_id} {job.page_uri!r}")
-
-
-def log_outcome(worker_id: int, job: ClaimedJob, result: ScrapeResult, max_attempts: int) -> None:
-    tag = job.page_uri or "<root>"
-    if result.success:
-        log.info(f"w{worker_id} success {job.place_id} {tag} "
-                 f"emails={len(result.emails)} links={len(result.links)}")
-    elif result.reason == SHUTDOWN_REASON:
-        log.info(f"w{worker_id} interrupted {job.place_id} {tag} (unlocked, will retry)")
-    elif job.attempts >= max_attempts:
-        log.info(f"w{worker_id} terminal {job.place_id} {tag} reason={result.reason}")
-    else:
-        log.info(f"w{worker_id} retry {job.place_id} {tag} "
-                 f"attempt={job.attempts} reason={result.reason}")
-
-
-async def sleep_or_shutdown(shutdown_event: asyncio.Event, seconds: float) -> bool:
-    """Sleep up to 'seconds' or return early if shutdown is signaled.
-    Returns True when shutdown is signaled, False on timeout."""
-    try:
-        await asyncio.wait_for(shutdown_event.wait(), timeout=seconds)
-        return True
-    except asyncio.TimeoutError:
-        return False
-
-
-async def claim_with_retry(
-    pool: asyncpg.Pool, shutdown_event: asyncio.Event, poll_interval_s: float,
-) -> ClaimedJob | None:
-    """Claim one page. On DB error, empty queue, or unexpected exception, sleep
-    poll_interval_s (or until shutdown) and return None; the caller loops back."""
-    job: ClaimedJob | None = None
-    try:
-        job = await claim_and_log_start(pool)
-    except CONNECTION_ERRORS as e:
-        log.warning(f"DB unavailable claiming: {e!r}; retrying in {poll_interval_s}s")
-    except Exception:
-        log.exception("claim failed")
-    if job is None:
-        await sleep_or_shutdown(shutdown_event, poll_interval_s)
-    return job
-
-
-async def handle_one_job(
-    worker_id: int,
-    context: BrowserContext,
-    bucket: aioboto3.Session,
-    job: ClaimedJob,
+async def job_handler(
+    worker_number: int,
     pool: asyncpg.Pool,
+    bucket: aioboto3.Session,
     shutdown_event: asyncio.Event,
-    throttle: DomainThrottle,
     max_attempts: int,
+    context: BrowserContext,
+    job: ClaimedJob,
 ) -> None:
     """Scrape one claimed page, record, log. Revert on shutdown"""
-    log.info(f"w{worker_id} claim {job.place_id} {job.page_uri or '<root>'} attempt={job.attempts}")
-
-    wait = throttle.reserve(job.site_domain)
-    if wait > 0.0:
-        log.info(f"w{worker_id} throttle {job.site_domain} wait={wait:.1f}s")
-        if await sleep_or_shutdown(shutdown_event, wait):
-            result = ScrapeResult(success=False, reason=SHUTDOWN_REASON)
-            await record_outcome(pool, job, result, max_attempts)
-            log_outcome(worker_id, job, result, max_attempts)
-            return
-
+    log.info(f"w{worker_number} claim {job.page_root} {job.page_uri or '<root>'}"
+             f" attempt={job.attempts}")
     try:
-        result = await process_one_job(context, bucket, job)
+        result = await scrape(context, bucket, job)
     except Exception as e:
         result = ScrapeResult(success=False, reason=f"unhandled: {e!r}")
 
@@ -555,182 +612,186 @@ async def handle_one_job(
         result = ScrapeResult(success=False, reason=SHUTDOWN_REASON)
 
     await record_outcome(pool, job, result, max_attempts)
-    log_outcome(worker_id, job, result, max_attempts)
+    log_outcome(worker_number, job, result, max_attempts)
 
 
 async def worker_loop(
-    worker_id: int,
-    context: BrowserContext,
-    bucket: aioboto3.Session,
+    worker_number: int,
     pool: asyncpg.Pool,
+    bucket: aioboto3.Session,
     shutdown_event: asyncio.Event,
-    gen: GenerationLimit,
-    throttle: DomainThrottle,
-    poll_interval_s: float,
     max_attempts: int,
-) -> None:
-    while not shutdown_event.is_set() and not gen.exhausted.is_set():
-        job = await claim_with_retry(pool, shutdown_event, poll_interval_s)
+    poll_interval_s: float,
+    counter: Counter,
+    throttle: DomainThrottle,
+    claim_lock: asyncio.Lock,
+    context: BrowserContext,
+):
+    while not shutdown_event.is_set() and not counter.reached.is_set():
+        log.info(f"w{worker_number}: Service is runnig")
+        counter.increment()
+
+        job: ClaimedJob | None = None
+        try:
+            async with claim_lock:
+                busy = throttle.busy_domains()
+                job = await claim_and_log_start(pool, busy)
+                if job is not None:
+                    throttle.reserve(job.page_root)
+        except CONNECTION_ERRORS as e:
+            log.warning(f"DB unavailable claiming: {e!r}; retrying in {poll_interval_s}s")
+        except Exception:
+            log.exception("claim failed")
         if job is None:
+            await sleep_or_shutdown(shutdown_event, poll_interval_s)
             continue
-        await handle_one_job(
-            worker_id, context, bucket, job, pool, shutdown_event, throttle, max_attempts
-        )
-        gen.record_page()
-    log.info(f"w{worker_id} exit")
+
+        try:
+            await job_handler(
+                worker_number,
+                pool,
+                bucket,
+                shutdown_event,
+                max_attempts,
+                context,
+                job,
+            )
+        finally:
+            throttle.cooldown(job.page_root)
+        await sleep_or_shutdown(shutdown_event, poll_interval_s)
+        if shutdown_event.is_set():
+            log.info(f"w{worker_number}: Successful exit")
 
 
-async def open_pool_with_retry(
-    worker_count: int, poll_interval_s: float, shutdown_event: asyncio.Event,
-) -> asyncpg.Pool | None:
-    """Create the queue pool, retrying every poll_interval_s if the DB is
-    unreachable. Returns None if shutdown was signaled before a pool opened."""
+async def service_loop(
+    headless: bool,
+    worker_count: int,
+    max_attempts: int,
+    poll_interval_s: float,
+    pages_per_browser: int,
+    min_domain_delay: float,
+    max_domain_delay: float,
+    shutdown_event: asyncio.Event,
+    pool: asyncpg.Pool,
+    bucket: aioboto3.Session,
+) -> None:
+    """
+    Set shutdown event handling, restart browser every N pages and start
+    M worker loops
+    """
+    throttle = DomainThrottle(
+        min_domain_delay, max_domain_delay, LOCK_DURATION.total_seconds()
+    )
+    claim_lock = asyncio.Lock()
     while not shutdown_event.is_set():
         try:
-            return await asyncpg.create_pool(
-                QUEUE_DB_URL, min_size=2, max_size=worker_count + 2
+            p = await async_playwright().start()
+            driver = await cdp_driver.start_async( # pyright:ignore
+                headless=headless,
+                browser_executable_path=p.chromium.executable_path,
+                lang=BROWSER_LANG,
+                tzone=BROWSER_TIMEZONE,
             )
-        except CONNECTION_ERRORS as e:
-            log.warning(f"DB unavailable: {e!r}; retrying in {poll_interval_s}s")
-            if await sleep_or_shutdown(shutdown_event, poll_interval_s):
-                return None
+            browser: Browser = await p.chromium.connect_over_cdp(
+                driver.get_endpoint_url()
+            )
+            if browser.contexts:
+                context = browser.contexts[0]
+            else:
+                context = await browser.new_context()
+            await context.route("**/*", block_heavy_assets)
+            counter = Counter(pages_per_browser)
+            await asyncio.gather(*(
+                worker_loop(
+                    i,
+                    pool,
+                    bucket,
+                    shutdown_event,
+                    max_attempts,
+                    poll_interval_s,
+                    counter,
+                    throttle,
+                    claim_lock,
+                    context,
+                ) for i in range(worker_count)
+            ))
+
+            if counter.reached.is_set(): raise MaxPagesReached
+
+        except MaxPagesReached:
+            log.info(f"{pages_per_browser} pages handled,"
+                " restarting the browser...")
+        finally:
+            try:
+                await driver.quit() # type: ignore
+            except Exception:
+                pass
+            if context: await context.close() # pyright: ignore
+            if browser: await browser.close() # pyright: ignore
+            if p: await p.stop() # type: ignore
     return None
 
 
-def shutdown_handler(shutdown_event: asyncio.Event) -> None:
-    loop = asyncio.get_running_loop()
-
-    def on_shutdown() -> None:
-        if not shutdown_event.is_set():
-            log.info("Shutdown signal received, draining workers...")
-        shutdown_event.set()
-
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, on_shutdown)
-
-
-async def run_browser_generation(
-    bucket: aioboto3.Session,
-    pool: asyncpg.Pool,
-    shutdown_event: asyncio.Event,
-    throttle: DomainThrottle,
-    worker_count: int,
-    poll_interval_s: float,
-    max_attempts: int,
-    pages_per_browser: int,
+async def main(
     headless: bool,
-    use_xvfb: bool,
+    worker_count: int,
+    max_attempts: int,
+    poll_interval_s: float,
+    pages_per_browser: int,
+    min_domain_delay: float,
+    max_domain_delay: float,
 ) -> None:
-    """Own the full Playwright stack for one generation, then tear it all down —
-    including `p.stop()`. playwright 1.59/1.60 leaks driver-side memory across
-    reuse, so the Playwright driver must be fully restarted (not just the browser)
-    each generation; mirrors `recycle_browser` in image_scraper.py."""
-    p = await async_playwright().start()
-    try:
-        driver = await cdp_driver.start_async(  # pyright: ignore[reportUnknownMemberType]
-            browser_executable_path=p.chromium.executable_path,
-            headless=headless and not use_xvfb,
-            xvfb=use_xvfb or None,
-            lang=BROWSER_LANG,
-            tzone=BROWSER_TIMEZONE,
-        )
-        try:
-            browser: Browser = await p.chromium.connect_over_cdp(driver.get_endpoint_url())
-            try:
-                context = browser.contexts[0] if browser.contexts else await browser.new_context()
-                await context.route("**/*", block_heavy_assets)
-                gen = GenerationLimit(limit=pages_per_browser)
-                await asyncio.gather(*(
-                    worker_loop(
-                        i, context, bucket, pool, shutdown_event,
-                        gen, throttle, poll_interval_s, max_attempts,
-                    )
-                    for i in range(worker_count)
-                ))
-            finally:
-                try:
-                    await browser.close()
-                except Exception as e:
-                    log.info(f"playwright disconnect skipped: {e!r}")
-        finally:
-            try:
-                driver.stop()  # pyright: ignore[reportUnknownMemberType]
-            except Exception as e:
-                log.info(f"driver stop skipped: {e!r}")
-    finally:
-        try:
-            await p.stop()
-        except Exception as e:
-            log.info(f"playwright stop skipped: {e!r}")
-
-
-async def run_service(
-    headless: bool = True,
-    worker_count: int = WORKER_COUNT,
-    poll_interval_s: float = POLL_INTERVAL_S,
-    max_attempts: int = MAX_ATTEMPTS,
-    pages_per_browser: int = PAGES_PER_BROWSER,
-    min_domain_delay_s: float = MIN_DOMAIN_DELAY_S,
-    max_domain_delay_s: float = MAX_DOMAIN_DELAY_S,
-    use_xvfb: bool = False,
-) -> None:
-    """Run workers until SIGTERM/SIGINT. Recycles the SeleniumBase+Playwright
-    browser every `pages_per_browser` pages; the R2 client, DB pool and the
-    per-domain throttle are shared across generations. Each worker scrapes pages
-    on one shared persistent context (no per-page context isolation anymore)."""
-
+    """
+    Open DB connections and start service_loop
+    """
     shutdown_event = asyncio.Event()
     shutdown_handler(shutdown_event)
-    throttle = DomainThrottle(min_domain_delay_s, max_domain_delay_s)
-
-    log.info(f"Service started, workers={worker_count}, recycle every {pages_per_browser} pages")
-    pool = await open_pool_with_retry(worker_count, poll_interval_s, shutdown_event)
-    if pool is None:
-        log.info("Shutdown clean")
-        return
-
-    session = aioboto3.Session()
-    try:
-        async with session.client(  # pyright: ignore
-            "s3",
-            endpoint_url=R2_ENDPOINT,
-            aws_access_key_id=R2_PAGES_ACCESS_KEY,
-            aws_secret_access_key=R2_PAGES_SECRET_ACCESS_KEY,
-            region_name="auto",
-        ) as bucket:  # pyright: ignore
-            while not shutdown_event.is_set():
-                try:
-                    await run_browser_generation(
-                        bucket, pool, shutdown_event,  # pyright: ignore[reportUnknownArgumentType]
-                        throttle, worker_count, poll_interval_s, max_attempts,
-                        pages_per_browser, headless, use_xvfb,
+    # opening DB connections and error handling to start `service_loop`
+    while not shutdown_event.is_set():
+        try:
+            async with asyncpg.create_pool(
+                QUEUE_DB_URL,
+                min_size=2,
+                max_size=worker_count + 2
+            ) as pool:
+                session = aioboto3.Session()
+                async with session.client(  # pyright: ignore
+                    "s3",
+                    endpoint_url=R2_ENDPOINT,
+                    aws_access_key_id=R2_PAGES_ACCESS_KEY,
+                    aws_secret_access_key=R2_PAGES_SECRET_ACCESS_KEY,
+                    region_name="auto",
+                ) as bucket: # pyright: ignore[reportUnknownVariableType]
+                    await service_loop(
+                        headless,
+                        worker_count,
+                        max_attempts,
+                        poll_interval_s,
+                        pages_per_browser,
+                        min_domain_delay,
+                        max_domain_delay,
+                        shutdown_event,
+                        pool,
+                        bucket, # type: ignore
                     )
-                except Exception:
-                    # Playwright start / SB launch / CDP connect failure: don't kill
-                    # the service, back off and let the loop start a fresh stack.
-                    log.exception("browser generation crashed; recycling after backoff")
-                    await sleep_or_shutdown(shutdown_event, poll_interval_s)
-    finally:
-        await pool.close()
-    log.info("Shutdown clean")
+        except CONNECTION_ERRORS as e:
+            log.warning(f"DB unavailable: {e!r};"
+                        f" retrying in {poll_interval_s}s")
+            if await sleep_or_shutdown(shutdown_event, poll_interval_s):
+                return None
+        except BUCKET_ERRORS as e:
+            log.warning(f"Bucket unavailable: {e!r};"
+                        f" retrying in {poll_interval_s}s")
+            if await sleep_or_shutdown(shutdown_event, poll_interval_s):
+                return None
+        except Exception as e:
+            return None
 
 
-async def main(
-    headless: bool = True,
-    worker_count: int = WORKER_COUNT,
-    max_attempts: int = MAX_ATTEMPTS,
-    poll_interval_s: float = POLL_INTERVAL_S,
-    pages_per_browser: int = PAGES_PER_BROWSER,
-    min_domain_delay_s: float = MIN_DOMAIN_DELAY_S,
-    max_domain_delay_s: float = MAX_DOMAIN_DELAY_S,
-    use_xvfb: bool = False,
-) -> None:
-    await run_service(
-        headless, worker_count, poll_interval_s, max_attempts,
-        pages_per_browser, min_domain_delay_s, max_domain_delay_s, use_xvfb
-    )
+    return None
 
 
+log = logging.getLogger(__name__)
 if __name__ == "__main__":
     import argparse
     logging.basicConfig(
@@ -738,53 +799,90 @@ if __name__ == "__main__":
         format="%(asctime)s %(levelname)s %(message)s",
         stream=sys.stderr,
     )
-    def bounded[T: (int, float)](t: type[T], low: T, high: T) -> Callable[[str], T]:
+    def bounded[T: (int, float)](
+        t: type[T],
+        low: T,
+        high: T
+    ) -> Callable[[str], T]:
         """argparse type: parse with type(), then enforce low <= value <= high"""
         def check(s: str) -> T:
             try:
                 v = t(s)
             except ValueError:
-                raise argparse.ArgumentTypeError(f"expected {t.__name__}, got {s!r}")
+                message = f"expected {t.__name__}, got {s!r}"
+                raise argparse.ArgumentTypeError(message)
             if not (low <= v <= high):
-                raise argparse.ArgumentTypeError(f"must be in [{low}, {high}], got {v}")
+                message = f"must be in [{low}, {high}], got {v}"
+                raise argparse.ArgumentTypeError(message)
             return v
         return check
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--workers", default=WORKER_COUNT, type=bounded(int, 1, 512),
-        help=f"INT     parallel workers, default {WORKER_COUNT}")
-    parser.add_argument("--max-attempts", default=MAX_ATTEMPTS, type=bounded(int, 1, 32),
-        help=f"INT     max attempts per page, default {MAX_ATTEMPTS}")
-    parser.add_argument("--poll-interval", default=POLL_INTERVAL_S, type=bounded(float, 0.01, 3_600.0),
-        help=f"FLOAT   poll interval per worker in seconds, default {POLL_INTERVAL_S}")
-    parser.add_argument("--pages-per-browser", default=PAGES_PER_BROWSER, type=bounded(int, 1, 200),
-        help=f"INT     recycle the SB+Playwright browser every N pages, default {PAGES_PER_BROWSER}")
-    parser.add_argument("--min-domain-delay", default=MIN_DOMAIN_DELAY_S, type=bounded(float, 0.0, 3_600.0),
-        help=f"FLOAT   min seconds between hits to one site_domain on this machine, default {MIN_DOMAIN_DELAY_S}")
-    parser.add_argument("--max-domain-delay", default=MAX_DOMAIN_DELAY_S, type=bounded(float, 0.0, 3_600.0),
-        help=f"FLOAT   max seconds between hits to one site_domain on this machine, default {MAX_DOMAIN_DELAY_S}")
-    parser.add_argument("--xvfb", action="store_true",
-        help="run headed Chrome inside Xvfb (stronger UC stealth than headless; needs Xvfb installed)")
-    parser.add_argument("--no-headless", action="store_true",
-        help="run a visible window (calibration only); without --xvfb the default is headless")
-    parser.add_argument("--respect-sitemap", action="store_true",
-        help="(not yet honored) crawl from sitemap when found on the root")
-    parser.add_argument("--respect-robots-txt", action="store_true",
-        help="(not yet honored) respect robots.txt crawl-delay")
+    parser.add_argument(
+        "--headed",
+        action="store_true",
+        help="Run in headed mode"
+    )
+    parser.add_argument(
+        "--workers",
+        default=WORKER_COUNT,
+        type=bounded(int, 1, 512),
+        help=f"Number of parallel workers, INT default {WORKER_COUNT}"
+    )
+    parser.add_argument(
+        "--max-attempts",
+        default=MAX_ATTEMPTS,
+        type=bounded(int, 1, 32),
+        help=f"Max attempts per page, INT default {MAX_ATTEMPTS}"
+    )
+    parser.add_argument(
+        "--poll-interval",
+        default=POLL_INTERVAL_S,
+        type=bounded(float, 0.01, 3_600.0),
+        help=f"Poll interval per worker in seconds,"
+        f" FLOAT default {POLL_INTERVAL_S}"
+    )
+    parser.add_argument(
+        "--pages-per-browser",
+        default=PAGES_PER_BROWSER,
+        type=bounded(int, 1, 200),
+        help=f"Number of ticks to handle before restaring the brower,"
+        f" INT default {PAGES_PER_BROWSER}"
+    )
+    parser.add_argument(
+        "--min-domain-delay",
+        default=MIN_DOMAIN_DELAY_S,
+        type=bounded(float, 0.0, 3_600.0),
+        help=f"Min delay between handling pages from one site domain,"
+        f" FLOAT default {MIN_DOMAIN_DELAY_S}"
+    )
+    parser.add_argument(
+        "--max-domain-delay",
+        default=MAX_DOMAIN_DELAY_S,
+        type=bounded(float, 0.0, 3_600.0),
+        help=f"Max delay between handling pages from one site domain,"
+        f" FLOAT default {MAX_DOMAIN_DELAY_S}"
+    )
     args = parser.parse_args()
     if args.min_domain_delay > args.max_domain_delay:
         parser.error("--min-domain-delay must be <= --max-domain-delay")
+    headless = not args.headed
+    worker_count = args.workers
+    max_attempts = args.max_attempts
+    poll_interval_s = args.poll_interval
+    pages_per_browser = args.pages_per_browser
+    min_domain_delay = args.min_domain_delay
+    max_domain_delay = args.max_domain_delay
 
     try:
         asyncio.run(main(
-            headless=not args.no_headless,
-            worker_count=args.workers,
-            max_attempts=args.max_attempts,
-            poll_interval_s=args.poll_interval,
-            pages_per_browser=args.pages_per_browser,
-            min_domain_delay_s=args.min_domain_delay,
-            max_domain_delay_s=args.max_domain_delay,
-            use_xvfb=args.xvfb,
+            headless,
+            worker_count,
+            max_attempts,
+            poll_interval_s,
+            pages_per_browser,
+            min_domain_delay,
+            max_domain_delay,
         ))
     except KeyboardInterrupt:
         log.info("Terminating")
