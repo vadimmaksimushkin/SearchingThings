@@ -1,11 +1,11 @@
 # FIXME: finish code cleanup
-# FIXME: implement delays and domain throttle
 # FIXME: DB schema change to deduplicate identical page_uri
 import asyncio
 import html as html_lib
 import random
 import re
 import sys
+import time
 import asyncpg
 import aioboto3  # pyright: ignore[reportMissingTypeStubs]
 import botocore.exceptions  # pyright: ignore[reportMissingTypeStubs]
@@ -74,7 +74,8 @@ SET locked_until = now() + $1,
     last_attempt_at = now()
 WHERE id = (
     SELECT id FROM scrape_queue
-    WHERE locked_until IS NULL OR locked_until < now()
+    WHERE (locked_until IS NULL OR locked_until < now())
+      AND site_domain <> ALL($2::text[])
     ORDER BY id
     LIMIT 1
     FOR UPDATE SKIP LOCKED
@@ -159,6 +160,37 @@ class Counter:
         self._counter += 1
         if self._counter >= self.limit:
             self.reached.set()
+
+
+class DomainThrottle:
+    def __init__(
+        self,
+        min_delay: float,
+        max_delay: float,
+        lease_s: float,
+    ) -> None:
+        self.min_delay = min_delay
+        self.max_delay = max_delay
+        self.lease_s = lease_s
+        self.busy_until: dict[str, float] = {}
+
+    def busy_domains(self) -> list[str]:
+        now = time.monotonic()
+        expired = [d for d, deadline in self.busy_until.items() if deadline <= now]
+        for d in expired:
+            del self.busy_until[d]
+        return list(self.busy_until.keys())
+
+    def reserve(self, domain: str) -> None:
+        self.busy_until[domain] = time.monotonic() + self.lease_s
+
+    def cooldown(self, domain: str) -> None:
+        delay = random.uniform(
+            self.min_delay,
+            self.max_delay
+        )
+        self.busy_until[domain] = time.monotonic() + delay
+        log.info(f"[DomainThrottle] Set delay on {domain} for {delay}s")
 
 
 class MaxPagesReached(Exception):
@@ -471,11 +503,13 @@ def log_outcome(
 
 
 
-async def claim_and_log_start(pool: asyncpg.Pool) -> ClaimedJob | None:
-    # FIXME: handle delays, skip jobs with active delay on site_domain
+async def claim_and_log_start(
+    pool: asyncpg.Pool,
+    busy_domains: list[str],
+) -> ClaimedJob | None:
     async with pool.acquire() as conn:
         async with conn.transaction():
-            row = await conn.fetchrow(CLAIM_SQL, LOCK_DURATION)
+            row = await conn.fetchrow(CLAIM_SQL, LOCK_DURATION, busy_domains)
             if not row:
                 return None
             log_id = await conn.fetchval(
@@ -601,8 +635,8 @@ async def worker_loop(
     max_attempts: int,
     poll_interval_s: float,
     counter: Counter,
-    min_domain_delay: float,
-    max_domain_delay: float,
+    throttle: DomainThrottle,
+    claim_lock: asyncio.Lock,
     context: BrowserContext,
 ):
     while not shutdown_event.is_set() and not counter.reached.is_set():
@@ -611,7 +645,11 @@ async def worker_loop(
 
         job: ClaimedJob | None = None
         try:
-            job = await claim_and_log_start(pool)
+            async with claim_lock:
+                busy = throttle.busy_domains()
+                job = await claim_and_log_start(pool, busy)
+                if job is not None:
+                    throttle.reserve(job.site_domain)
         except CONNECTION_ERRORS as e:
             log.warning(f"DB unavailable claiming: {e!r}; retrying in {poll_interval_s}s")
         except Exception:
@@ -620,15 +658,18 @@ async def worker_loop(
             await sleep_or_shutdown(shutdown_event, poll_interval_s)
             continue
 
-        await job_handler(
-            worker_number,
-            pool,
-            bucket,
-            shutdown_event,
-            max_attempts,
-            context,
-            job,
-        )
+        try:
+            await job_handler(
+                worker_number,
+                pool,
+                bucket,
+                shutdown_event,
+                max_attempts,
+                context,
+                job,
+            )
+        finally:
+            throttle.cooldown(job.site_domain)
         await sleep_or_shutdown(shutdown_event, poll_interval_s)
         if shutdown_event.is_set():
             log.info(f"w{worker_number}: Successful exit")
@@ -650,6 +691,10 @@ async def service_loop(
     Set shutdown event handling, restart browser every N pages and start
     M worker loops
     """
+    throttle = DomainThrottle(
+        min_domain_delay, max_domain_delay, LOCK_DURATION.total_seconds()
+    )
+    claim_lock = asyncio.Lock()
     while not shutdown_event.is_set():
         try:
             p = await async_playwright().start()
@@ -677,8 +722,8 @@ async def service_loop(
                     max_attempts,
                     poll_interval_s,
                     counter,
-                    min_domain_delay,
-                    max_domain_delay,
+                    throttle,
+                    claim_lock,
                     context,
                 ) for i in range(worker_count)
             ))
