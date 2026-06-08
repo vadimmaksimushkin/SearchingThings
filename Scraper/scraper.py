@@ -1,9 +1,12 @@
 # FIXME: finish code cleanup
 import asyncio
 import html as html_lib
+import os
 import random
 import re
+import shutil
 import sys
+import tempfile
 import time
 import asyncpg
 import aioboto3  # pyright: ignore[reportMissingTypeStubs]
@@ -649,9 +652,6 @@ async def worker_loop(
     context: BrowserContext,
 ):
     while not shutdown_event.is_set() and not counter.reached.is_set():
-        log.info(f"w{worker_number}: Service is runnig")
-        counter.increment()
-
         job: ClaimedJob | None = None
         try:
             async with claim_lock:
@@ -679,6 +679,7 @@ async def worker_loop(
             )
         finally:
             throttle.cooldown(job.page_root)
+        counter.increment()
         await sleep_or_shutdown(shutdown_event, poll_interval_s)
         if shutdown_event.is_set():
             log.info(f"w{worker_number}: Successful exit")
@@ -705,6 +706,11 @@ async def service_loop(
     )
     claim_lock = asyncio.Lock()
     while not shutdown_event.is_set():
+        p = None
+        driver = None
+        browser = None # type: ignore
+        context = None
+        profile_dir: str | None = None # memory leak plug, 125M for a profile
         try:
             p = await async_playwright().start()
             driver = await cdp_driver.start_async( # pyright:ignore
@@ -714,6 +720,10 @@ async def service_loop(
                 tzone=BROWSER_TIMEZONE,
                 browser_args=LAUNCH_ARGS,
             )
+            try:
+                profile_dir = driver.config.user_data_dir # pyright: ignore
+            except Exception:
+                profile_dir = None
             browser: Browser = await p.chromium.connect_over_cdp(
                 driver.get_endpoint_url()
             )
@@ -744,13 +754,43 @@ async def service_loop(
             log.info(f"{pages_per_browser} pages handled,"
                 " restarting the browser...")
         finally:
-            try:
-                await driver.quit() # type: ignore
-            except Exception:
-                pass
-            if context: await context.close() # pyright: ignore
-            if browser: await browser.close() # pyright: ignore
-            if p: await p.stop() # type: ignore
+            if context:
+                try:
+                    await context.close()
+                except Exception:
+                    pass
+            if browser:
+                try:
+                    await browser.close()
+                except Exception:
+                    pass
+            if driver:
+                try:
+                    driver.quit() # quit() is sync; terminates the chrome proc
+                except Exception:
+                    pass
+            if p:
+                try:
+                    await p.stop()
+                except Exception:
+                    pass
+            # SeleniumBase only deletes its /tmp/uc_* profile via atexit,
+            # which never fires in this long-running service, so each
+            # orphaned profile is a leak
+            if (
+                profile_dir
+                and os.path.basename(profile_dir).startswith("uc_")
+                and os.path.dirname(profile_dir) == tempfile.gettempdir()
+            ):
+                # Retry until the dir is actually gone and no remnants
+                # are left due to race conditions
+                for _ in range(10):
+                    shutil.rmtree(profile_dir, ignore_errors=True)
+                    if not os.path.exists(profile_dir):
+                        break
+                    await asyncio.sleep(0.2)
+                else:
+                    log.warning(f"temp profile not fully removed: {profile_dir}")
     return None
 
 
