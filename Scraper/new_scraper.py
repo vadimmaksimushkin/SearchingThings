@@ -75,17 +75,17 @@ SET locked_until = now() + $1,
 WHERE id = (
     SELECT id FROM scrape_queue
     WHERE (locked_until IS NULL OR locked_until < now())
-      AND site_domain <> ALL($2::text[])
+      AND page_root <> ALL($2::text[])
     ORDER BY id
     LIMIT 1
     FOR UPDATE SKIP LOCKED
 )
-RETURNING id, place_id, site_domain, page_uri, attempts
+RETURNING id, page_root, page_uri, attempts
 """
 
 LOG_START_SQL = """
-INSERT INTO attempt_log (place_id, site_domain, page_uri, attempt_no)
-VALUES ($1, $2, $3, $4)
+INSERT INTO attempt_log (page_root, page_uri, attempt_no)
+VALUES ($1, $2, $3)
 RETURNING log_id
 """
 
@@ -97,24 +97,24 @@ WHERE log_id = $1
 
 INSERT_SUCCESS_SQL = """
 INSERT INTO success
-    (place_id, site_domain, page_uri, final_uri, http_status, r2_key, bytes, emails, attempts)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-ON CONFLICT (place_id, site_domain, page_uri) DO NOTHING
+    (page_root, page_uri, final_uri, http_status, r2_key, bytes, emails, attempts)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT (page_root, page_uri) DO NOTHING
 """
 
 INSERT_ERROR_SQL = """
-INSERT INTO error (place_id, site_domain, page_uri, http_status, attempts, reason)
-VALUES ($1, $2, $3, $4, $5, $6)
-ON CONFLICT (place_id, site_domain, page_uri) DO NOTHING
+INSERT INTO error (page_root, page_uri, http_status, attempts, reason)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (page_root, page_uri) DO NOTHING
 """
 
 DELETE_QUEUE_RECORD_SQL = """
-DELETE FROM scrape_queue WHERE place_id = $1 AND site_domain = $2 AND page_uri = $3
+DELETE FROM scrape_queue WHERE page_root = $1 AND page_uri = $2
 """
 
 UNLOCK_QUEUE_RECORD_SQL = """
 UPDATE scrape_queue SET locked_until = NULL
-WHERE place_id = $1 AND site_domain = $2 AND page_uri = $3
+WHERE page_root = $1 AND page_uri = $2
 """
 
 # Unlock AND roll back the attempt when a worker is interrupted by shutdown
@@ -122,30 +122,30 @@ UNLOCK_AND_DECREMENT_SQL = """
 UPDATE scrape_queue
 SET locked_until = NULL,
     attempts = GREATEST(attempts - 1, 0)
-WHERE place_id = $1 AND site_domain = $2 AND page_uri = $3
+WHERE page_root = $1 AND page_uri = $2
 """
 
 LOCK_PAGE_CAP_SQL = """
-SELECT pages_remaining FROM place_uri
-WHERE place_id = $1 AND site_domain = $2
+SELECT pages_remaining FROM page
+WHERE page_root = $1
 FOR UPDATE
 """
 
 FETCH_KNOWN_PAGES_SQL = """
-SELECT page_uri FROM scrape_queue WHERE place_id = $1 AND site_domain = $2
-UNION ALL SELECT page_uri FROM success WHERE place_id = $1 AND site_domain = $2
-UNION ALL SELECT page_uri FROM error   WHERE place_id = $1 AND site_domain = $2
+SELECT page_uri FROM scrape_queue WHERE page_root = $1
+UNION ALL SELECT page_uri FROM success WHERE page_root = $1
+UNION ALL SELECT page_uri FROM error   WHERE page_root = $1
 """
 
 INSERT_CHILD_SQL = """
-INSERT INTO scrape_queue (place_id, site_domain, page_uri)
-VALUES ($1, $2, $3)
-ON CONFLICT (place_id, site_domain, page_uri) DO NOTHING
+INSERT INTO scrape_queue (page_root, page_uri)
+VALUES ($1, $2)
+ON CONFLICT (page_root, page_uri) DO NOTHING
 """
 
 DECREMENT_BUDGET_SQL = """
-UPDATE place_uri SET pages_remaining = GREATEST(pages_remaining - $3, 0)
-WHERE place_id = $1 AND site_domain = $2
+UPDATE page SET pages_remaining = GREATEST(pages_remaining - $2, 0)
+WHERE page_root = $1
 """
 
 
@@ -205,8 +205,7 @@ class TerminateService(Exception):
 class ClaimedJob:
     id: int
     log_id: int
-    place_id: str
-    site_domain: str
+    page_root: str
     page_uri: str
     attempts: int
 
@@ -306,16 +305,16 @@ def normalize_host_path(url: str) -> str:
     return f"{host}{path}".lower()
 
 
-def is_same_site(site_domain: str, url: str) -> bool:
-    base = normalize_host_path(site_domain)
+def is_same_site(page_root: str, url: str) -> bool:
+    base = normalize_host_path(page_root)
     target = normalize_host_path(url)
     return target == base or target.startswith(base + "/")
 
 
-def page_r2_key(place_id: str, final_uri: str) -> str:
+def page_r2_key(final_uri: str) -> str:
     p = urlparse(final_uri)
     rest = f"{p.hostname or ''}{p.path}".rstrip("/")
-    return f"{place_id}/{rest}.html"
+    return f"{rest}.html"
 
 
 def is_asset_or_sentry(email: str) -> bool:
@@ -332,9 +331,9 @@ def emails_from_html(html: str) -> set[str]:
     return {e for e in EMAIL_RE.findall(decoded) if not is_asset_or_sentry(e)}
 
 
-async def discover_links(page: Page, site_domain: str) -> set[str]:
+async def discover_links(page: Page, page_root: str) -> set[str]:
     """Collect same-site page URLs. Skips assets and the root itself"""
-    base = normalize_host_path(site_domain)
+    base = normalize_host_path(page_root)
     links: set[str] = set()
     for anchor in await page.locator("a[href]").all():
         href = await anchor.get_attribute("href")
@@ -365,15 +364,13 @@ async def enqueue_children(
     Returns inserted count."""
     remaining: int | None = await conn.fetchval(
         LOCK_PAGE_CAP_SQL,
-        job.place_id,
-        job.site_domain
+        job.page_root,
     )
     if not remaining or not links:
         return 0
     known_rows = await conn.fetch(
         FETCH_KNOWN_PAGES_SQL,
-        job.place_id,
-        job.site_domain
+        job.page_root,
     )
     known = {r["page_uri"] for r in known_rows}
     candidates = (u for u in links if u not in known)
@@ -384,12 +381,11 @@ async def enqueue_children(
         return 0
     await conn.executemany(
         INSERT_CHILD_SQL,
-        [(job.place_id, job.site_domain, u) for u in to_insert],
+        [(job.page_root, u) for u in to_insert],
     )
     await conn.execute(
         DECREMENT_BUDGET_SQL,
-        job.place_id,
-        job.site_domain,
+        job.page_root,
         len(to_insert)
     )
     return len(to_insert)
@@ -416,8 +412,7 @@ async def record_outcome(
                     )
                     await conn.execute(
                         UNLOCK_AND_DECREMENT_SQL,
-                        job.place_id,
-                        job.site_domain,
+                        job.page_root,
                         job.page_uri,
                     )
                     return
@@ -434,8 +429,7 @@ async def record_outcome(
                     await enqueue_children(conn, job, result.links)
                     await conn.execute(
                         INSERT_SUCCESS_SQL,
-                        job.place_id,
-                        job.site_domain,
+                        job.page_root,
                         job.page_uri,
                         result.final_uri,
                         result.http_status,
@@ -446,15 +440,13 @@ async def record_outcome(
                     )
                     await conn.execute(
                         DELETE_QUEUE_RECORD_SQL,
-                        job.place_id,
-                        job.site_domain,
+                        job.page_root,
                         job.page_uri,
                     )
                 elif job.attempts >= max_attempts:
                     await conn.execute(
                         INSERT_ERROR_SQL,
-                        job.place_id,
-                        job.site_domain,
+                        job.page_root,
                         job.page_uri,
                         result.http_status,
                         job.attempts,
@@ -462,22 +454,20 @@ async def record_outcome(
                     )
                     await conn.execute(
                         DELETE_QUEUE_RECORD_SQL,
-                        job.place_id,
-                        job.site_domain,
+                        job.page_root,
                         job.page_uri,
                     )
                 else:
                     await conn.execute(
                         UNLOCK_QUEUE_RECORD_SQL,
-                        job.place_id,
-                        job.site_domain,
+                        job.page_root,
                         job.page_uri,
                     )
     except CONNECTION_ERRORS as e:
-        log.warning(f"DB unavailable recording {job.place_id} {job.page_uri!r}:"
+        log.warning(f"DB unavailable recording {job.page_root} {job.page_uri!r}:"
                     f" {e!r}")
     except Exception:
-        log.exception(f"record_outcome failed for {job.place_id}"
+        log.exception(f"record_outcome failed for {job.page_root}"
                       f" {job.page_uri!r}")
 
 
@@ -489,16 +479,16 @@ def log_outcome(
 ) -> None:
     tag = job.page_uri or "<root>"
     if result.success:
-        log.info(f"w{worker_number} success {job.place_id} {tag} "
+        log.info(f"w{worker_number} success {job.page_root} {tag} "
                  f"emails={len(result.emails)} links={len(result.links)}")
     elif result.reason == SHUTDOWN_REASON:
-        log.info(f"w{worker_number} interrupted {job.place_id} {tag}"
+        log.info(f"w{worker_number} interrupted {job.page_root} {tag}"
                  f" (unlocked, will retry)")
     elif job.attempts >= max_attempts:
-        log.info(f"w{worker_number} terminal {job.place_id} {tag}"
+        log.info(f"w{worker_number} terminal {job.page_root} {tag}"
                  f" reason={result.reason}")
     else:
-        log.info(f"w{worker_number} retry {job.place_id} {tag} "
+        log.info(f"w{worker_number} retry {job.page_root} {tag} "
                  f"attempt={job.attempts} reason={result.reason}")
 
 
@@ -513,14 +503,13 @@ async def claim_and_log_start(
             if not row:
                 return None
             log_id = await conn.fetchval(
-                LOG_START_SQL, row["place_id"], row["site_domain"],
+                LOG_START_SQL, row["page_root"],
                 row["page_uri"], row["attempts"],
             )
             return ClaimedJob(
                 id=row["id"],
                 log_id=log_id,
-                place_id=row["place_id"],
-                site_domain=row["site_domain"],
+                page_root=row["page_root"],
                 page_uri=row["page_uri"],
                 attempts=row["attempts"],
             )
@@ -531,7 +520,7 @@ async def scrape(
     bucket: aioboto3.Session,
     job: ClaimedJob
 ) -> ScrapeResult:
-    target = job.page_uri or job.site_domain
+    target = job.page_uri or job.page_root
     page = await context.new_page()
     try:
         try:
@@ -567,13 +556,13 @@ async def scrape(
         html = await page.content()
         emails = emails_from_html(html)
         try:
-            links = await discover_links(page, job.site_domain)
+            links = await discover_links(page, job.page_root)
         except Exception as e:
             log.warning(f"  link discovery failed on {final_uri}: {e!r}")
             links: set[str] = set()
 
         body = html.encode("utf-8", "replace")
-        key = page_r2_key(job.place_id, final_uri)
+        key = page_r2_key(final_uri)
         try:
             await bucket.put_object( # type: ignore
                 Bucket=R2_PAGES_BUCKET, Key=key, Body=body,
@@ -612,7 +601,7 @@ async def job_handler(
     job: ClaimedJob,
 ) -> None:
     """Scrape one claimed page, record, log. Revert on shutdown"""
-    log.info(f"w{worker_number} claim {job.place_id} {job.page_uri or '<root>'}"
+    log.info(f"w{worker_number} claim {job.page_root} {job.page_uri or '<root>'}"
              f" attempt={job.attempts}")
     try:
         result = await scrape(context, bucket, job)
@@ -649,7 +638,7 @@ async def worker_loop(
                 busy = throttle.busy_domains()
                 job = await claim_and_log_start(pool, busy)
                 if job is not None:
-                    throttle.reserve(job.site_domain)
+                    throttle.reserve(job.page_root)
         except CONNECTION_ERRORS as e:
             log.warning(f"DB unavailable claiming: {e!r}; retrying in {poll_interval_s}s")
         except Exception:
@@ -669,7 +658,7 @@ async def worker_loop(
                 job,
             )
         finally:
-            throttle.cooldown(job.site_domain)
+            throttle.cooldown(job.page_root)
         await sleep_or_shutdown(shutdown_event, poll_interval_s)
         if shutdown_event.is_set():
             log.info(f"w{worker_number}: Successful exit")
