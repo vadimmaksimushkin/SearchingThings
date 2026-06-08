@@ -47,6 +47,14 @@ PAGE_TIMEOUT_MS = 15_000
 LOCK_DURATION = timedelta(minutes=5.0)
 BROWSER_LANG = "en-US"
 BROWSER_TIMEZONE = "America/Mexico_City"
+LAUNCH_ARGS = [
+    "--use-gl=angle",
+    "--use-angle=gl-egl",
+    "--ignore-gpu-blocklist",
+    "--enable-gpu-rasterization",
+    "--screen-info={1366x768}",
+    "--window-size=1366,728",
+]
 EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
 BLOCKED_RESOURCE_TYPES = {"image", "media", "font"}
 BLOCKED_URL_EXTS = {"pdf", "zip", "exe", "dmg", "tar", "gz"}
@@ -257,6 +265,18 @@ async def block_heavy_assets(route: Route) -> None:
         await route.abort()
         return
     await route.continue_()
+
+
+async def clean_ua(page: Page) -> None:
+    """Strip the `HeadlessChrome` token from the live UA via CDP. Kept dynamic
+    (not hardcoded) since SeleniumBase auto-updates its bundled Chrome."""
+    real_ua = await page.evaluate("() => navigator.userAgent")
+    clean = real_ua.replace("HeadlessChrome", "Chrome")
+    cdp = await page.context.new_cdp_session(page)
+    await cdp.send( # pyright: ignore[reportUnknownMemberType]
+        "Network.setUserAgentOverride",
+        {"userAgent": clean}
+    )
 
 
 async def scroll_to_bottom(
@@ -522,6 +542,7 @@ async def scrape(
     target = job.page_uri or job.page_root
     page = await context.new_page()
     try:
+        await clean_ua(page)
         try:
             response: Response | None = await page.goto(
                 target, timeout=PAGE_TIMEOUT_MS, wait_until="domcontentloaded"
@@ -691,6 +712,7 @@ async def service_loop(
                 browser_executable_path=p.chromium.executable_path,
                 lang=BROWSER_LANG,
                 tzone=BROWSER_TIMEZONE,
+                browser_args=LAUNCH_ARGS,
             )
             browser: Browser = await p.chromium.connect_over_cdp(
                 driver.get_endpoint_url()
