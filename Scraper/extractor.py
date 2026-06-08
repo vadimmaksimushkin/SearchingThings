@@ -15,6 +15,7 @@ import logging
 import signal
 import sys
 import asyncpg
+from collections import defaultdict
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -41,27 +42,35 @@ WHERE website IS NOT NULL AND website <> ''
   AND fetched_at > $1
 ORDER BY fetched_at
 """
-FETCH_KNOWN_SEED_SQL = """
-SELECT place_id, site_domain FROM scrape_queue WHERE place_id = ANY($1) AND page_uri = ''
-UNION ALL SELECT place_id, site_domain FROM success WHERE place_id = ANY($1) AND page_uri = ''
-UNION ALL SELECT place_id, site_domain FROM error   WHERE place_id = ANY($1) AND page_uri = ''
+INSERT_PAGE_PLACES_SQL = """
+INSERT INTO page_places (place_id, page_root) VALUES ($1, $2)
+ON CONFLICT (place_id, page_root) DO NOTHING
 """
 INSERT_SEED_QUEUE_SQL = """
-INSERT INTO scrape_queue (place_id, site_domain, page_uri) VALUES ($1, $2, '')
-ON CONFLICT (place_id, site_domain, page_uri) DO NOTHING
+INSERT INTO scrape_queue (page_root, page_uri) VALUES ($1, '')
+ON CONFLICT (page_root, page_uri) DO NOTHING
 """
-INSERT_SEED_PLACE_URI_SQL = """
-INSERT INTO place_uri (place_id, site_domain) VALUES ($1, $2)
-ON CONFLICT (place_id, site_domain) DO NOTHING
+INSERT_PAGE_SQL = """
+INSERT INTO page (page_root) VALUES ($1)
+ON CONFLICT (page_root) DO NOTHING
+"""
+FETCH_BACKFILL_EMAILS_SQL = """
+SELECT pp.place_id, s.emails
+FROM page_places pp
+JOIN success s ON s.page_root = pp.page_root
+WHERE pp.place_id = ANY($1) AND s.emails IS NOT NULL
 """
 READ_SEED_SCAN_WATERMARK_SQL = "SELECT last_scanned_at FROM extractor_state WHERE id = 1"
 UPDATE_SEED_SCAN_WATERMARK_SQL = "UPDATE extractor_state SET last_scanned_at = $1 WHERE id = 1"
 READ_EMAIL_SYNC_WATERMARK_SQL = "SELECT last_emails_synced_at FROM extractor_state WHERE id = 1"
 UPDATE_EMAIL_SYNC_WATERMARK_SQL = "UPDATE extractor_state SET last_emails_synced_at = $1 WHERE id = 1"
 FETCH_SUCCESS_EMAILS_SQL = """
-SELECT place_id, emails, scraped_at FROM success
+SELECT page_root, emails, scraped_at FROM success
 WHERE emails IS NOT NULL AND scraped_at > $1
 ORDER BY scraped_at
+"""
+FETCH_ROOT_PLACES_SQL = """
+SELECT place_id, page_root FROM page_places WHERE page_root = ANY($1)
 """
 MERGE_EMAILS_SQL = """
 UPDATE places
@@ -123,37 +132,67 @@ def normalize_site_root(url: str) -> str | None:
 
 
 # website tick
-async def seed_new_roots(
-    queue_pool: asyncpg.Pool, batch: list[asyncpg.Record]
-    ) -> int:
-    """Filter batch against pg_queue known set; INSERT new places"""
-    place_ids = [row["place_id"] for row in batch]
-    known_rows = await queue_pool.fetch(FETCH_KNOWN_SEED_SQL, place_ids)
-    known: set[tuple[str, str]] = {(r["place_id"], r["site_domain"]) for r in known_rows}
-    to_insert: list[tuple[str, str]] = []
-    for row in batch:
-        site_domain = normalize_site_root(row["website"])
-        if not site_domain or (row["place_id"], site_domain) in known:
-            continue
-        to_insert.append((row["place_id"], site_domain))
-    if not to_insert:
-        return 0
-    async with queue_pool.acquire() as conn:
-        async with conn.transaction():
-            await conn.executemany(INSERT_SEED_QUEUE_SQL, to_insert)
-            await conn.executemany(INSERT_SEED_PLACE_URI_SQL, to_insert)
-    return len(to_insert)
-
-
-async def merge_emails(places_pool: asyncpg.Pool, batch: list[asyncpg.Record]) -> int:
-    """Update places.places.emails from queue.success.emails"""
-    rows = [(r["place_id"], r["emails"]) for r in batch]
+async def apply_email_merges(
+    places_pool: asyncpg.Pool, rows: list[tuple[str, list[str]]],
+) -> int:
+    """Union each (place_id, emails) pair into places.emails. Idempotent."""
     if not rows:
         return 0
     async with places_pool.acquire() as conn:
         async with conn.transaction():
             await conn.executemany(MERGE_EMAILS_SQL, rows)
     return len(rows)
+
+
+async def seed_new_roots(
+    queue_pool: asyncpg.Pool, places_pool: asyncpg.Pool,
+    batch: list[asyncpg.Record],
+) -> int:
+    """Map every place to its page_root (page_places) and seed the crawl once
+    per new root (scrape_queue + page). ON CONFLICT dedups, so a chain's many
+    places collapse to a single crawl. Backfills emails for places that land on
+    a root which was already scraped."""
+    mappings: list[tuple[str, str]] = []
+    for row in batch:
+        page_root = normalize_site_root(row["website"])
+        if not page_root:
+            continue
+        mappings.append((row["place_id"], page_root))
+    if not mappings:
+        return 0
+    roots = [(root,) for root in {root for _, root in mappings}]
+    async with queue_pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.executemany(INSERT_PAGE_PLACES_SQL, mappings)
+            await conn.executemany(INSERT_SEED_QUEUE_SQL, roots)
+            await conn.executemany(INSERT_PAGE_SQL, roots)
+        backfill = await conn.fetch(
+            FETCH_BACKFILL_EMAILS_SQL, [pid for pid, _ in mappings]
+        )
+    await apply_email_merges(
+        places_pool, [(r["place_id"], r["emails"]) for r in backfill]
+    )
+    return len(mappings)
+
+
+async def merge_emails(
+    places_pool: asyncpg.Pool, queue_pool: asyncpg.Pool,
+    batch: list[asyncpg.Record],
+) -> int:
+    """Fan each scraped root's emails out to every place on that root."""
+    roots = list({r["page_root"] for r in batch})
+    if not roots:
+        return 0
+    map_rows = await queue_pool.fetch(FETCH_ROOT_PLACES_SQL, roots)
+    places_by_root: dict[str, list[str]] = defaultdict(list)
+    for r in map_rows:
+        places_by_root[r["page_root"]].append(r["place_id"])
+    merges: list[tuple[str, list[str]]] = [
+        (place_id, r["emails"])
+        for r in batch
+        for place_id in places_by_root.get(r["page_root"], ())
+    ]
+    return await apply_email_merges(places_pool, merges)
 
 
 async def seed_push(
@@ -173,13 +212,13 @@ async def seed_push(
             async for row in cursor:
                 buffer.append(row)
                 if len(buffer) >= batch_size:
-                    total_inserted += await seed_new_roots(queue_pool, buffer)
+                    total_inserted += await seed_new_roots(queue_pool, places_pool, buffer)
                     total_scanned += len(buffer)
                     last_fetched_at = buffer[-1]["fetched_at"]
                     log.info(f"  seed push: scanned={total_scanned} inserted={total_inserted}")
                     buffer.clear()
             if buffer:
-                total_inserted += await seed_new_roots(queue_pool, buffer)
+                total_inserted += await seed_new_roots(queue_pool, places_pool, buffer)
                 total_scanned += len(buffer)
                 last_fetched_at = buffer[-1]["fetched_at"]
                 log.info(f"  seed push: scanned={total_scanned} inserted={total_inserted}")
@@ -208,13 +247,13 @@ async def email_pull(
             async for row in cursor:
                 buffer.append(row)
                 if len(buffer) >= batch_size:
-                    total_merged += await merge_emails(places_pool, buffer)
+                    total_merged += await merge_emails(places_pool, queue_pool, buffer)
                     total_scanned += len(buffer)
                     last_scraped_at = buffer[-1]["scraped_at"]
                     log.info(f"  email pull: scanned={total_scanned} merged={total_merged}")
                     buffer.clear()
             if buffer:
-                total_merged += await merge_emails(places_pool, buffer)
+                total_merged += await merge_emails(places_pool, queue_pool, buffer)
                 total_scanned += len(buffer)
                 last_scraped_at = buffer[-1]["scraped_at"]
                 log.info(f"  email pull: scanned={total_scanned} merged={total_merged}")
