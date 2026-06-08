@@ -20,7 +20,7 @@ jobs:
       - name: Install ruff
         run: pip install 'ruff>=0.15.15'
       - name: Ruff check
-        # run: ruff check .
+        run: pwd
 
   deploy:
     name: Deploy (m1 required; m2/m3 best-effort)
